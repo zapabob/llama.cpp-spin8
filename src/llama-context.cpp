@@ -2933,6 +2933,7 @@ uint32_t llama_context::graph_max_nodes() const {
         model.arch == LLM_ARCH_MINIMAX_01 ||
         model.arch == LLM_ARCH_MINIMAX_M3 ||
         model.arch == LLM_ARCH_HY_V4 ||
+        model.arch == LLM_ARCH_HY_V4_FLASH ||
         model.arch == LLM_ARCH_INKLING2) {
         res = std::max<uint32_t>(1024u, 32u * model.n_tensors());
     } else if (model.arch == LLM_ARCH_DFLASH && model.hparams.dflash_selector_rank > 0) {
