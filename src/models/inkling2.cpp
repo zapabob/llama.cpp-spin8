@@ -97,6 +97,7 @@ void llama_model_inkling2::load_arch_tensors(llama_model_loader &) {
 
     // output
     output           = create_tensor(tn(LLM_TENSOR_OUTPUT,           "weight"), {n_embd, n_vocab_padded}, 0);
+    prec_policy.set_acc(output, GGML_PREC_F32);
     output_norm      = create_tensor(tn(LLM_TENSOR_OUTPUT_NORM,      "weight"), {n_embd}, 0);
     output_res_query = create_tensor(tn(LLM_TENSOR_OUTPUT_RES_QUERY, "weight"), {n_embd}, 0);
 
@@ -372,10 +373,7 @@ llama_model_inkling2::graph::graph(const llm_graph_params & params) : llm_graph_
                 LLAMA_EXPERT_GATING_FUNC_TYPE_SIGMOID,
                 il,
                 nullptr,
-                layer.ffn_gate_up_exps,
-                layer.ffn_up_exps_s,
-                layer.ffn_gate_exps_s,
-                layer.ffn_down_exps_s);
+                layer.ffn_gate_up_exps);
 
         cur = convolve(cur, layer.ffn_post_conv, nullptr, state, history, recr, 2*n_embd_k_gqa + n_embd);
         cb(cur, "ffn_out", il);
@@ -396,7 +394,6 @@ llama_model_inkling2::graph::graph(const llm_graph_params & params) : llm_graph_
 
     // lm_head
     cur = build_lora_mm(model.output, cur);
-    ggml_prec_set_acc(cur, GGML_PREC_F32);
 
     if (hparams.f_final_logit_softcapping != 0.0f) {
         const float cap = hparams.f_final_logit_softcapping;
