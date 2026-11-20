@@ -24,7 +24,7 @@ struct get_rows_context;
 
 typedef uint32_t (*get_rows_read_index_fn_t)(const void * src1, uint32_t idx, int idx_type);
 typedef void (*get_rows_flat_compute_fn_t)(float * dst_spad, const void * src_spad, uint32_t cur_elems);
-typedef void (*get_rows_tiled_compute_fn_t)(float * dst_spad, const uint8_t * src_spad, uint32_t n_k_tiles, uint32_t tile_stride, uint32_t row);
+typedef void (*get_rows_tiled_compute_fn_t)(void * dst_spad, const uint8_t * src_spad, uint32_t n_k_tiles, uint32_t tile_stride, uint32_t row);
 
 struct get_rows_context {
     struct htp_ops_context * octx;
@@ -135,6 +135,42 @@ static void get_rows_thread_sametype(const htp_thread_t * th, unsigned int nth, 
 }
 
 
+
+static inline HVX_Vector get_rows_clamp_f16_finite(HVX_Vector v) {
+    const HVX_Vector max_f16 = hvx_vec_splat_f32(65504.0f);
+    const HVX_Vector min_f16 = hvx_vec_splat_f32(-65504.0f);
+    const HVX_Vector inf     = hvx_vec_splat_f32(INFINITY);
+    const HVX_VectorPred finite = Q6_Q_vcmp_gt_VsfVsf(inf, hvx_vec_abs_f32(v));
+    const HVX_VectorPred high = Q6_Q_and_QQ(finite, Q6_Q_vcmp_gt_VsfVsf(v, max_f16));
+    const HVX_VectorPred low  = Q6_Q_and_QQ(finite, Q6_Q_vcmp_gt_VsfVsf(min_f16, v));
+    v = Q6_V_vmux_QVV(high, max_f16, v);
+    return Q6_V_vmux_QVV(low, min_f16, v);
+}
+
+static __attribute__((noinline)) void get_rows_flat_f32_to_f16(
+    float * restrict dst_ptr,
+    const void * restrict src_ptr,
+    uint32_t n
+) {
+    const HVX_Vector * restrict vsrc = (const HVX_Vector *) src_ptr;
+    HVX_Vector       * restrict vdst = (HVX_Vector *) dst_ptr;
+
+    const uint32_t n_vec = n / 64;
+    const uint32_t n_rem = n % 64;
+
+    for (uint32_t i = 0; i < n_vec; i++) {
+        const HVX_Vector v0 = get_rows_clamp_f16_finite(vsrc[2 * i + 0]);
+        const HVX_Vector v1 = get_rows_clamp_f16_finite(vsrc[2 * i + 1]);
+        vdst[i] = hvx_vec_f32_to_f16(v0, v1);
+    }
+
+    if (n_rem > 0) {
+        const HVX_Vector v0 = get_rows_clamp_f16_finite(vsrc[2 * n_vec + 0]);
+        const HVX_Vector v1 = (n_rem > 32) ? get_rows_clamp_f16_finite(vsrc[2 * n_vec + 1]) : Q6_V_vzero();
+        const HVX_Vector v  = hvx_vec_f32_to_f16(v0, v1);
+        hvx_vec_store_a(&vdst[n_vec], n_rem * sizeof(__fp16), v);
+    }
+}
 
 struct get_rows_flat_task {
     dma_addr_t src0_data;
@@ -317,7 +353,7 @@ static void get_rows_thread_tiled(const htp_thread_t * th, unsigned int nth, uns
 
     for (uint32_t step = 0; step < ir1 - ir0; ++step) {
         const uint32_t i = ir0 + step;
-        float * dst_spad   = (float *) dma_queue_pop(dma_q).src;
+        void * dst_spad    = (void *) dma_queue_pop(dma_q).src;
         uint8_t * src_spad = (uint8_t *) dma_queue_pop(dma_q).dst;
 
         struct get_rows_tiled_task task = get_rows_tiled_calc_task(octx, grctx, i, n_k_tiles, tile_size);
@@ -377,7 +413,8 @@ int op_get_rows(struct htp_ops_context * octx) {
 
     const uint32_t ne00          = octx->src[0]->ne[0];
     const uint32_t src0_row_size = htp_tensor_get_row_size(octx->src[0]->type, ne00);
-    if (src0_row_size == 0) {
+    const uint32_t dst_row_size  = htp_tensor_get_row_size(octx->dst->type, ne00);
+    if (src0_row_size == 0 || dst_row_size == 0) {
         return HTP_STATUS_NO_SUPPORT;
     }
 
@@ -385,10 +422,14 @@ int op_get_rows(struct htp_ops_context * octx) {
         if (octx->src[0]->type != octx->dst->type) {
             return HTP_STATUS_NO_SUPPORT;
         }
-    } else {
-        if (octx->dst->type != HTP_TYPE_F32) {
+    } else if (octx->dst->type == HTP_TYPE_F16) {
+        const bool flat_f32_to_f16  = (kparams->kernel_type == HTP_GET_ROWS_KERNEL_FLAT  && octx->src[0]->type == HTP_TYPE_F32);
+        const bool tiled_f16_to_f16 = (kparams->kernel_type == HTP_GET_ROWS_KERNEL_TILED && octx->src[0]->type == HTP_TYPE_F16);
+        if (!flat_f32_to_f16 && !tiled_f16_to_f16) {
             return HTP_STATUS_NO_SUPPORT;
         }
+    } else if (octx->dst->type != HTP_TYPE_F32 || octx->src[0]->type == HTP_TYPE_F32) {
+        return HTP_STATUS_NO_SUPPORT;
     }
 
     if (octx->src[1]->type != HTP_TYPE_I32 && octx->src[1]->type != HTP_TYPE_I64) {
@@ -397,14 +438,14 @@ int op_get_rows(struct htp_ops_context * octx) {
 
     const struct htp_tensor * dst = octx->dst;
     const uint32_t total_tasks    = kparams->total_tasks;
-    const uint32_t dst_row_size   = (kparams->kernel_type == HTP_GET_ROWS_KERNEL_SAMETYPE) ? src0_row_size : ne00 * sizeof(float);
 
     uint32_t task_start = 0;
     uint32_t tasks      = total_tasks;
 
     if (octx->ctx->mdev.count > 1) {
         uint32_t tasks_per_chunk = 1;
-        htp_tensor_mdev_rows_per_chunk(dst, (uint32_t) dst->nb[0], dst_row_size, &tasks_per_chunk);
+        const uint32_t dst_elem_size = (dst->type == HTP_TYPE_F16) ? sizeof(__fp16) : sizeof(float);
+        htp_tensor_mdev_rows_per_chunk(dst, dst_elem_size, dst_row_size, &tasks_per_chunk);
         const struct htp_tensor_mdev_range range = htp_tensor_mdev_partition(total_tasks, tasks_per_chunk, octx->ctx->mdev.idx, octx->ctx->mdev.count, &octx->ctx->mdev.count_div);
         task_start = range.start;
         tasks      = range.count;
@@ -435,7 +476,7 @@ int op_get_rows(struct htp_ops_context * octx) {
     grctx.dst_row_size  = dst_row_size;
     grctx.idx_type      = octx->src[1]->type;
 
-    htp_get_rows_vtcm_layout_build(&grctx.vtcm_layout, kparams->kernel_type, octx->src[0]->type, ne00, total_tasks, grctx.idx_type, n_hvx);
+    htp_get_rows_vtcm_layout_build(&grctx.vtcm_layout, kparams->kernel_type, octx->src[0]->type, octx->dst->type, ne00, total_tasks, grctx.idx_type, n_hvx);
 
     if (grctx.vtcm_layout.total_bytes > octx->ctx->vtcm_size) {
         FARF(ERROR, "get-rows: VTCM reservation %zu is too small, needed %zu\n",
@@ -449,16 +490,23 @@ int op_get_rows(struct htp_ops_context * octx) {
             q_func = get_rows_thread_sametype;
             break;
         case HTP_GET_ROWS_KERNEL_TILED:
-            switch (octx->src[0]->type) {
-                case HTP_TYPE_F16:  grctx.compute_tiled = hvx_dequantize_row_tiled_f16_f32;  break;
-                case HTP_TYPE_Q1_0: grctx.compute_tiled = hvx_dequantize_row_tiled_q1_0_f32; break;
-                case HTP_TYPE_Q2_0: grctx.compute_tiled = hvx_dequantize_row_tiled_q2_0_f32; break;
-                case HTP_TYPE_Q8_0: grctx.compute_tiled = hvx_dequantize_row_tiled_q8_0_f32; break;
-                case HTP_TYPE_Q4_0: grctx.compute_tiled = hvx_dequantize_row_tiled_q4_0_f32; break;
-                case HTP_TYPE_Q4_K: grctx.compute_tiled = hvx_dequantize_row_tiled_q4_k_f32; break;
-                case HTP_TYPE_Q5_K: grctx.compute_tiled = hvx_dequantize_row_tiled_q5_k_f32; break;
-                case HTP_TYPE_Q6_K: grctx.compute_tiled = hvx_dequantize_row_tiled_q6_k_f32; break;
-                default:            return HTP_STATUS_NO_SUPPORT;
+            if (octx->dst->type == HTP_TYPE_F16) {
+                if (octx->src[0]->type != HTP_TYPE_F16) {
+                    return HTP_STATUS_NO_SUPPORT;
+                }
+                grctx.compute_tiled = hvx_dequantize_row_tiled_f16_f16;
+            } else {
+                switch (octx->src[0]->type) {
+                    case HTP_TYPE_F16:  grctx.compute_tiled = hvx_dequantize_row_tiled_f16_f32;  break;
+                    case HTP_TYPE_Q1_0: grctx.compute_tiled = hvx_dequantize_row_tiled_q1_0_f32; break;
+                    case HTP_TYPE_Q2_0: grctx.compute_tiled = hvx_dequantize_row_tiled_q2_0_f32; break;
+                    case HTP_TYPE_Q8_0: grctx.compute_tiled = hvx_dequantize_row_tiled_q8_0_f32; break;
+                    case HTP_TYPE_Q4_0: grctx.compute_tiled = hvx_dequantize_row_tiled_q4_0_f32; break;
+                    case HTP_TYPE_Q4_K: grctx.compute_tiled = hvx_dequantize_row_tiled_q4_k_f32; break;
+                    case HTP_TYPE_Q5_K: grctx.compute_tiled = hvx_dequantize_row_tiled_q5_k_f32; break;
+                    case HTP_TYPE_Q6_K: grctx.compute_tiled = hvx_dequantize_row_tiled_q6_k_f32; break;
+                    default:            return HTP_STATUS_NO_SUPPORT;
+                }
             }
             grctx.tile_size   = htp_tensor_get_tile_size(octx->src[0]->type);
             grctx.tile_stride = htp_tensor_get_tile_padded_size(octx->src[0]->type);
@@ -466,6 +514,7 @@ int op_get_rows(struct htp_ops_context * octx) {
             break;
         case HTP_GET_ROWS_KERNEL_FLAT:
             switch (octx->src[0]->type) {
+                case HTP_TYPE_F32:  grctx.compute_flat = get_rows_flat_f32_to_f16;         break;
                 case HTP_TYPE_F16:  grctx.compute_flat = hvx_dequantize_row_flat_f16_f32;  break;
                 case HTP_TYPE_BF16: grctx.compute_flat = hvx_dequantize_row_flat_bf16_f32; break;
                 case HTP_TYPE_Q1_0: grctx.compute_flat = hvx_dequantize_row_flat_q1_0_f32; break;
