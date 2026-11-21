@@ -134,3 +134,20 @@ Legend:
 |                            TRUNC | ❌ | ❌ | ✅ | 🟡 | 🟡 | ❌ | ✅ | ❌ | 🟡 | ✅ | ✅ | ✅ | ❌ | ❌ |
 |                          UPSCALE | ❌ | 🟡 | ✅ | ✅ | ❌ | 🟡 | ✅ | ✅ | 🟡 | ✅ | ✅ | ✅ | ❌ | ❌ |
 |                            XIELU | ❌ | ❌ | ✅ | ✅ | ❌ | ❌ | ✅ | ❌ | ❌ | ✅ | ✅ | ✅ | ❌ | ❌ |
+
+## Private Spin8 v1 extension
+
+This fork adds `MUL_MAT_SPIN8` and `GET_ROWS_SPIN8`. Their weights are
+`SPIN8_G128` matrices, with 128 logical elements per 34-byte block, and an
+explicit F64 rotation bank of shape `[8, 8, 9]` in GGML dimension order.
+`MUL_MAT_SPIN8` takes F32 activations with contiguous inner dimensions;
+`GET_ROWS_SPIN8` takes a contiguous I32 index vector. Both return F32.
+
+The CPU implementation has executable codec and full Qwen35 graph tests.
+The CUDA implementation contains fused kernels; compilation and device execution
+are separate checks recorded by the tools under `tools/spin8`. No support is
+implemented for the other backends or for training/backpropagation.
+
+The generated backend table above describes the upstream operation tests;
+it is not evidence of GPU execution of these private operations. See
+`tools/spin8/README.md` for the exact codec contract and verification commands.

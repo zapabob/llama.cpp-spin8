@@ -30,6 +30,7 @@
 #include "ggml-cuda/fp8.cuh"
 #include "ggml-cuda/fwht.cuh"
 #include "ggml-cuda/getrows.cuh"
+#include "ggml-cuda/spin8.cuh"
 #include "ggml-cuda/im2col.cuh"
 #include "ggml-cuda/mmf.cuh"
 #include "ggml-cuda/mmq.cuh"
@@ -2809,6 +2810,12 @@ static void ggml_cuda_mul_mat_id(ggml_backend_cuda_context & ctx, ggml_tensor * 
 
 static bool ggml_cuda_compute_forward(ggml_backend_cuda_context & ctx, struct ggml_tensor * dst) {
     switch (dst->op) {
+        case GGML_OP_MUL_MAT_SPIN8:
+            ggml_cuda_op_mul_mat_spin8(ctx, dst);
+            break;
+        case GGML_OP_GET_ROWS_SPIN8:
+            ggml_cuda_op_get_rows_spin8(ctx, dst);
+            break;
         case GGML_OP_ARGMAX:
             ggml_cuda_argmax(ctx, dst);
             break;
@@ -6345,6 +6352,19 @@ static bool ggml_backend_cuda_device_supports_op(ggml_backend_dev_t dev, const g
     }
 
     switch (op->op) {
+        case GGML_OP_MUL_MAT_SPIN8:
+        case GGML_OP_GET_ROWS_SPIN8: {
+            const ggml_tensor * a = op->src[0];
+            const ggml_tensor * b = op->src[1];
+            const ggml_tensor * bank = op->src[2];
+            return a->type == GGML_TYPE_SPIN8_G128 && ggml_is_matrix(a) && ggml_is_contiguous(a) &&
+                   a->ne[0] % 128 == 0 && bank && bank->type == GGML_TYPE_F64 && ggml_is_contiguous(bank) &&
+                   bank->ne[0] == 8 && bank->ne[1] == 8 && bank->ne[2] == 9 && bank->ne[3] == 1 &&
+                   op->type == GGML_TYPE_F32 && ggml_is_contiguous(op) &&
+                   (op->op == GGML_OP_MUL_MAT_SPIN8 ?
+                       b->type == GGML_TYPE_F32 && b->nb[0] == sizeof(float) && b->ne[0] == a->ne[0] :
+                       b->type == GGML_TYPE_I32 && ggml_is_vector(b) && ggml_is_contiguous(b));
+        }
         case GGML_OP_UNARY:
             switch (ggml_get_unary_op(op)) {
                 case GGML_UNARY_OP_ABS:

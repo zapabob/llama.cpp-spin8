@@ -2,6 +2,7 @@
 #include "ggml-common.h"
 
 #include "ggml-quants.h"
+#include "ggml-spin8.h"
 #include "ggml-impl.h"
 #include "ggml-cpu/ggml-cpu-impl.h"
 #include "ggml-cpu.h"
@@ -5515,6 +5516,8 @@ bool ggml_validate_row_data(enum ggml_type type, const void * data, size_t nbyte
     const size_t nb = nbytes/ggml_type_size(type);
 
     switch (type) {
+        case GGML_TYPE_SPIN8_G128:
+            return spin8_g128_validate_payload((const uint8_t *) data, nbytes) == SPIN8_OK;
         case GGML_TYPE_BF16:
             {
                 int nans = 0;

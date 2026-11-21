@@ -540,7 +540,9 @@ llama_model_qwen35::graph_mtp::graph_mtp(const llm_graph_params & params)
     if (ubatch.token) {
         ggml_tensor * tok_embd_w = layer.nextn.embed_tokens ? layer.nextn.embed_tokens : model.tok_embd;
 
-        tok_embd = ggml_get_rows(ctx0, tok_embd_w, inp->tokens);
+        tok_embd = tok_embd_w->type == GGML_TYPE_SPIN8_G128 ?
+            ggml_get_rows_spin8(ctx0, tok_embd_w, inp->tokens, model.spin8_banks.at(tok_embd_w)) :
+            ggml_get_rows(ctx0, tok_embd_w, inp->tokens);
 
         // a Hadamard-latent table stores rotated rows; restore the primal basis
         if (hdmd) {
@@ -550,6 +552,9 @@ llama_model_qwen35::graph_mtp::graph_mtp(const llm_graph_params & params)
                     tok_embd = ggml_mul(ctx0, tok_embd, it->second.signs);
                 }
             }
+        }
+        if (const auto it = model.spin8_projection.right.find(tok_embd_w); it != model.spin8_projection.right.end()) {
+            tok_embd = build_spin8_projection(tok_embd, it->second);
         }
     } else {
         tok_embd = inp->embd;

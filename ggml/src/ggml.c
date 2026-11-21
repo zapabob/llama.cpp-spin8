@@ -637,6 +637,13 @@ FILE * ggml_fopen(const char * fname, const char * mode) {
 }
 
 static const struct ggml_type_traits type_traits[GGML_TYPE_COUNT] = {
+    [GGML_TYPE_SPIN8_G128] = {
+        .type_name                = "spin8_g128",
+        .blck_size                = 128,
+        .type_size                = 34,
+        .is_quantized             = true,
+        // A generic row callback has no access to the tensor-specific bank.
+    },
     [GGML_TYPE_I8] = {
         .type_name                = "i8",
         .blck_size                = 1,
@@ -1114,9 +1121,11 @@ static const char * GGML_OP_NAME[GGML_OP_COUNT] = {
     "GLU",
 
     "SLEEP",
+    "MUL_MAT_SPIN8",
+    "GET_ROWS_SPIN8",
 };
 
-static_assert(GGML_OP_COUNT == 100, "GGML_OP_COUNT != 100");
+static_assert(GGML_OP_COUNT == 102, "GGML_OP_COUNT != 102");
 
 static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
     "none",
@@ -1229,9 +1238,11 @@ static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
     "glu(x)",
 
     "sleep(x)",
+    "spin8(x,bank)*y",
+    "spin8_rows(x,ids,bank)",
 };
 
-static_assert(GGML_OP_COUNT == 100, "GGML_OP_COUNT != 100");
+static_assert(GGML_OP_COUNT == 102, "GGML_OP_COUNT != 102");
 
 static_assert(GGML_OP_POOL_COUNT == 2, "GGML_OP_POOL_COUNT != 2");
 
@@ -3375,6 +3386,45 @@ struct ggml_tensor * ggml_mul_mat(
     result->src[0] = a;
     result->src[1] = b;
 
+    return result;
+}
+
+static void ggml_spin8_assert_bank(const struct ggml_tensor * a, const struct ggml_tensor * bank) {
+    GGML_ASSERT(a->type == GGML_TYPE_SPIN8_G128);
+    GGML_ASSERT(ggml_is_matrix(a) && ggml_is_contiguous(a));
+    GGML_ASSERT(a->ne[0] % 128 == 0);
+    GGML_ASSERT(bank->type == GGML_TYPE_F64 && ggml_is_contiguous(bank));
+    GGML_ASSERT(bank->ne[0] == 8 && bank->ne[1] == 8 && bank->ne[2] == 9 && bank->ne[3] == 1);
+}
+
+struct ggml_tensor * ggml_mul_mat_spin8(
+        struct ggml_context * ctx,
+        struct ggml_tensor  * a,
+        struct ggml_tensor  * b,
+        struct ggml_tensor  * bank) {
+    ggml_spin8_assert_bank(a, bank);
+    GGML_ASSERT(b->type == GGML_TYPE_F32 && b->nb[0] == sizeof(float));
+    GGML_ASSERT(a->ne[0] == b->ne[0]);
+    struct ggml_tensor * result = ggml_new_tensor_4d(ctx, GGML_TYPE_F32, a->ne[1], b->ne[1], b->ne[2], b->ne[3]);
+    result->op = GGML_OP_MUL_MAT_SPIN8;
+    result->src[0] = a;
+    result->src[1] = b;
+    result->src[2] = bank;
+    return result;
+}
+
+struct ggml_tensor * ggml_get_rows_spin8(
+        struct ggml_context * ctx,
+        struct ggml_tensor  * a,
+        struct ggml_tensor  * ids,
+        struct ggml_tensor  * bank) {
+    ggml_spin8_assert_bank(a, bank);
+    GGML_ASSERT(ids->type == GGML_TYPE_I32 && ggml_is_vector(ids) && ggml_is_contiguous(ids));
+    struct ggml_tensor * result = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, a->ne[0], ids->ne[0]);
+    result->op = GGML_OP_GET_ROWS_SPIN8;
+    result->src[0] = a;
+    result->src[1] = ids;
+    result->src[2] = bank;
     return result;
 }
 

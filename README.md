@@ -1,103 +1,124 @@
-# llama.cpp
+English | [日本語](README.ja.md)
 
-![llama.cpp](https://raw.githubusercontent.com/ggml-org/llama-brand/refs/heads/master/logo/svg/cover/llama-cpp/cover-llama-cpp-dark.svg)
+# llama.cpp-spin8
 
-<div align="center">
+**An experimental llama.cpp extension for Spin8 G128 quantisation.** It stores compressed weights in GGUF and executes them through dedicated CPU/CUDA operations and the Qwen35 graph. The repository includes quantisation tools, direct weight editing, projection onto the subspace orthogonal to a supplied direction, and a Colab workflow for downloading, converting and evaluating Hugging Face models.
 
-<b>LLM inference in C/C++</b>
+The Spin8 implementation is maintained on `main`; imported upstream tags and branches are historical references, not Spin8 releases.
 
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](https://opensource.org/licenses/MIT)
-[![Release](https://img.shields.io/github/v/release/ggml-org/llama.cpp?color=brightgreen)](https://github.com/ggml-org/llama.cpp/releases?q=tag:v1)
-[![Nightly](https://img.shields.io/github/v/release/ggml-org/llama.cpp?label=nightly&filter=b*&color=orange)](https://github.com/ggml-org/llama.cpp/releases?q=b)
-[![Server](https://img.shields.io/github/actions/workflow/status/ggml-org/llama.cpp/server.yml?label=Server)](https://github.com/ggml-org/llama.cpp/actions/workflows/server.yml)
-[![Docker](https://img.shields.io/github/actions/workflow/status/ggml-org/llama.cpp/docker.yml?label=Docker)](https://github.com/ggml-org/llama.cpp/actions/workflows/docker.yml)
-[![Winget](https://img.shields.io/github/actions/workflow/status/ggml-org/llama.cpp/winget.yml?label=Winget)](https://github.com/ggml-org/llama.cpp/actions/workflows/winget.yml)
+The upstream base is [ggml-org/llama.cpp](https://github.com/ggml-org/llama.cpp) at commit [`7fce5439fe451cd48340b112ec37d2befe02c776`](https://github.com/ggml-org/llama.cpp/commit/7fce5439fe451cd48340b112ec37d2befe02c776). The original introduction is preserved in the [upstream README](docs/spin8/UPSTREAM_README.md).
 
-[v1.0.0](https://huggingface.co/blog/ggml-org/llama-cpp-v1) / [ggml](https://github.com/ggml-org/ggml) / [ops](https://github.com/ggml-org/llama.cpp/blob/master/docs/ops.md) / [maintainer PRs](https://github.com/ggml-org/llama.cpp/pulls?q=is%3Apr%20is%3Aopen%20draft%3AFalse%20(author%3Asanmai%20OR%20author%3Argerganov%20OR%20author%3AKitaitiMakoto%20OR%20author%3Adanbev%20OR%20author%3Aaldehir%20OR%20author%3Amax-krasnyansky%20OR%20author%3ACISC%20OR%20author%3Aggerganov%20OR%20author%3Aam17an%20OR%20author%3Ajhen0409%20OR%20author%3Abartowski1182%20OR%20author%3Anikwen%20OR%20author%3Ahipudding%20OR%20author%3Aravi9%20OR%20author%3AServeurpersoCom%20OR%20author%3Athelittlefireman%20OR%20author%3Apwilkin%20OR%20author%3Areeselevine%20OR%20author%3Angxson%20OR%20author%3Ajeffbolznv%20OR%20author%3Amarty1885%20OR%20author%3A0cc4m%20OR%20author%3ATitaniumtown%20OR%20author%3Aangt%20OR%20author%3AIMbackK%20OR%20author%3Aarthw%20OR%20author%3AJohannesGaessler%20OR%20author%3AORippler%20OR%20author%3Aruixiang63%20OR%20author%3Axctan%20OR%20author%3AmasterFoad%20OR%20author%3Aallozaur%20OR%20author%3AAndreas-Krebbel%20OR%20author%3Ayomaytk%20OR%20author%3Aaendk%20OR%20author%3Awine99%20OR%20author%3Agaugarg-nv%20OR%20author%3Ataronaeo%20OR%20author%3Aforforever73%20OR%20author%3Achaxu01%20OR%20author%3Alhez%20OR%20author%3AAlekseiNikiforovIBM%20OR%20author%3Anetrunnereve%20OR%20author%3Afairydreaming%20OR%20author%3Aynankani)%20sort%3Aupdated-desc) / [dev stats](https://github.com/ggml-org/llama.cpp-dev) / [lib llama API](https://github.com/ggml-org/llama.cpp/issues/9289) / [llama-server REST API](https://github.com/ggml-org/llama.cpp/issues/9291)
+## Current status
 
-</div>
+| Area | Status |
+| --- | --- |
+| Spin8 CPU/CUDA operations, loader and Qwen35 graph integration | Implemented |
+| CPU inference on small synthetic models, including projection | Verified |
+| HF download, conversion, resumption and evaluation tools | Implemented, with small-model checks |
+| PyTorch CUDA preflight on a Colab A100 | Passed |
+| Native Spin8 CUDA execution on an actual A100 | Not run |
+| Full 27B conversion, inference and mathematics benchmarks | Not run |
 
-## Description
+[STATUS.md](docs/spin8/STATUS.md) records the validation scope and source artefact hashes. The supplied GGUF files are synthetic fixtures for checking numerical operations. The repository contains no pretrained 27B weights and no measured improvement in mathematical ability, refusal rate or throughput.
 
-The main goal of `llama.cpp` is to enable LLM (and MLLM) inference with minimal setup and state-of-the-art performance on a wide range of hardware - locally and in the cloud.
+GitHub Actions was disabled when this repository was created to prevent imported upstream release workflows from running. The recorded CPU results come from earlier local validation; they are not evidence of a successful CI run in this repository.
 
-The `llama.cpp` project is built on top of the [ggml](https://github.com/ggml-org/ggml) library.
+## Format and scope
 
-## Quick start
+- Each group of 128 weights occupies 34 bytes: **2.125 bits per weight for the compressed payload**. Per-matrix rotation banks, GGUF metadata and tensors that remain uncompressed add to the final size.
+- The codec uses a Hadamard transform and a bank of eight-dimensional rotations. The default triality bank is fixed and reproducible from its seed. The CLI does not train rotations or run three LLMs.
+- GGML type **44**, file type **43** and codec version **1** are unregistered extensions specific to this pinned runtime. Standard upstream llama.cpp, Ollama and LM Studio loaders cannot read this representation.
+- Conversion currently targets canonical `qwen35` GGUF files. Dedicated CPU/CUDA operations handle compressed matrix multiplication and embedding lookup. Support across all model families has not been established.
+- Mathematical donor differences and projection onto the subspace orthogonal to a supplied direction are optional. The tools do not discover a direction automatically; its meaning and its effect on model behaviour require separate evaluation.
 
-A few options to get `llama.cpp` installed on your machine:
+See the [Spin8 documentation](tools/spin8/README.md) and [testing guide](tools/spin8/TESTING.md) for the detailed format and execution contract.
 
-```bash
-# curl
-curl -LsSf https://llama.app/install.sh | sh
+## Build for CPU and check a small model
 
-# powershell
-irm https://llama.app/install.ps1 | iex
-```
-
-- Visit https://llama.app and follow the instructions
-- Run with Docker - see our [Docker documentation](docs/docker.md)
-- Download pre-built binaries from the [releases page](https://github.com/ggml-org/llama.cpp/releases)
-- Build from source by cloning this repository - check out [our build guide](docs/build.md)
-
-Once installed:
+On Linux, install CMake, a C/C++ compiler and Python, then clone the repository:
 
 ```sh
-# Download and run a model directly from Hugging Face
-llama cli -hf ggml-org/Qwen3.5-0.8B-GGUF
-
-# Launch OpenAI-compatible API server
-llama serve -hf ggml-org/Qwen3.5-0.8B-GGUF
+git clone https://github.com/zapabob/llama.cpp-spin8.git
+cd llama.cpp-spin8
 ```
 
-<table align="center">
-    <tr>
-        <td align="center" width=50%>
-            <img width="1310" height="888" alt="VLM session with `llama cli`" src="https://github.com/user-attachments/assets/88726b48-1713-48aa-a525-95a02e78afc4" />
-            <i>VLM session with <b>llama cli</b></i>
-        </td>
-        <td align="center">
-            <img width="1392" height="958" alt="Llama Chat, the built-in chat app, against `llama serve` running Qwen 3.6" src="https://github.com/user-attachments/assets/b402f972-2e32-4def-8771-8d849f08cf2e" />
-            <i>Llama Chat, the built-in chat app, against <b>llama serve</b></i>
-        </td>
-    </tr>
-<table>
+Run the following from the repository root. This builds an API server without downloading external Web UI assets.
 
-## Documentation
+```sh
+cmake -S . -B build-spin8-cpu \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DGGML_CUDA=OFF -DGGML_NATIVE=OFF -DGGML_RPC=OFF \
+  -DLLAMA_BUILD_TESTS=ON -DLLAMA_BUILD_EXAMPLES=OFF \
+  -DLLAMA_BUILD_TOOLS=ON -DLLAMA_BUILD_SERVER=ON \
+  -DLLAMA_BUILD_UI=OFF -DLLAMA_USE_PREBUILT_UI=OFF \
+  -DLLAMA_OPENSSL=OFF
+cmake --build build-spin8-cpu --target llama-server test-spin8-native -j 4
 
-#### Tools
+python tools/spin8/verify_native.py \
+  --binary build-spin8-cpu/bin/test-spin8-native \
+  --model examples/spin8-colab/payload/fixtures/tiny-qwen35-spin8.gguf \
+  --control examples/spin8-colab/payload/fixtures/tiny-qwen35-decoded.gguf \
+  --out-dir build-spin8-cpu/spin8-parity \
+  --ngl 0 --control-ngl 0 --require-spin8-device CPU
+```
 
-- [cli](tools/cli/README.md)
-- [completion](tools/completion/README.md)
-- [server](tools/server/README.md)
-- [Text-to-speech (TTS) models](docs/multimodal/tts.md)
-- [GBNF grammars](grammars/README.md)
+This comparison checks native execution against an F32 model decoded from the same Spin8 weights. It does not measure quantisation error against the original pretrained model or assess language quality.
 
-#### Development
+## Build for an A100 with CUDA
 
-- [How to build](docs/build.md)
-- [Running on Docker](docs/docker.md)
-- [Build on Android](docs/android.md)
-- [Multi-GPU usage](docs/multi-gpu.md)
-- [Performance troubleshooting](docs/development/token_generation_performance_tips.md)
-- [GGML tips & tricks](https://github.com/ggml-org/llama.cpp/wiki/GGML-Tips-&-Tricks)
-- [XCFramework](docs/xcframework.md)
-- [Completions](docs/completions.md)
-- [Models](docs/models.md)
-- [Release process](docs/release.md)
+Install the CUDA Toolkit and a compatible compiler. Use a separate build directory for CUDA; architecture `80` is the A100 setting.
 
-## Contributing
+```sh
+cmake -S . -B build-spin8-cuda \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=80 \
+  -DGGML_NATIVE=OFF -DGGML_RPC=OFF \
+  -DGGML_CUDA_NO_VMM=ON -DGGML_CUDA_FA=OFF -DGGML_CUDA_NCCL=OFF \
+  -DLLAMA_BUILD_TESTS=ON -DLLAMA_BUILD_EXAMPLES=OFF \
+  -DLLAMA_BUILD_TOOLS=ON -DLLAMA_BUILD_SERVER=ON \
+  -DLLAMA_BUILD_UI=OFF -DLLAMA_USE_PREBUILT_UI=OFF \
+  -DLLAMA_OPENSSL=OFF
+cmake --build build-spin8-cuda --target llama-server test-spin8-native -j 4
 
-- Contributors can open PRs
-- Collaborators will be invited based on contributions
-- Maintainers can push to branches in the `llama.cpp` repo and merge PRs into the `master` branch
-- Any help with managing issues, PRs and projects is very appreciated!
-- Read the [CONTRIBUTING.md](CONTRIBUTING.md) for more information
+python tools/spin8/verify_native.py \
+  --binary build-spin8-cuda/bin/test-spin8-native \
+  --model examples/spin8-colab/payload/fixtures/tiny-qwen35-spin8.gguf \
+  --control examples/spin8-colab/payload/fixtures/tiny-qwen35-decoded.gguf \
+  --out-dir build-spin8-cuda/spin8-parity \
+  --ngl -1 --control-ngl 0 \
+  --require-spin8-device CUDA --require-spin8-op MUL_MAT_SPIN8
+```
 
-## Acknowledgements
+These are execution instructions, not a record of completed native Spin8 validation on an A100. The placement check detects ordinary CPU fallback; it is neither a throughput benchmark nor a GPU kernel profiler.
 
-- [yhirose/cpp-httplib](https://github.com/yhirose/cpp-httplib) - Single-header HTTP server, used by `llama-server` - MIT license
-- [nothings/stb](https://github.com/nothings/stb) - Single-header image format decoder, used by multimodal subsystem - Public domain
-- [nlohmann/json](https://github.com/nlohmann/json) - Single-header JSON library, used by various tools/examples - MIT License
-- [mackron/miniaudio](https://github.com/mackron/miniaudio) - Single-header audio format decoder, used by multimodal subsystem - Public domain
-- [sheredom/subprocess.h](https://github.com/sheredom/subprocess.h) - Single-header process launching solution for C and C++ - Public domain
+## Quantisation and direct weight editing
+
+Use [convert.py](tools/spin8/convert.py) to quantise a floating-point GGUF, and [edit_weights.py](tools/spin8/edit_weights.py) for mathematical weight differences and direction projection. The [Spin8 documentation](tools/spin8/README.md) describes Python dependencies and input requirements. The CUDA encoder requires a CUDA-enabled PyTorch installation.
+
+```sh
+python tools/spin8/convert.py quantize model-f16.gguf model-spin8.gguf \
+  --include-embedding --encoder torch --device cuda \
+  --compute-dtype float32 --chunk-groups 256 \
+  --resume-dir spin8-cache/run-01
+
+build-spin8-cuda/bin/llama-server -m model-spin8.gguf \
+  --host 127.0.0.1 --port 8080 -ngl -1
+```
+
+Retain the source model identity, conversion settings and provenance of any edited weights. Direction projection is a linear operation on a supplied vector; it does not guarantee refusal removal or improved mathematical ability. This weight-editing pipeline performs no answer-data SFT or optimiser updates.
+
+## Colab and benchmarks
+
+The repository includes the [Colab notebook](examples/spin8-colab/Spin8_A100_Weight_Edit.ipynb) and a [Japanese execution guide](examples/spin8-colab/README_JA.md).
+
+[Open in Google Colab](https://colab.research.google.com/github/zapabob/llama.cpp-spin8/blob/main/examples/spin8-colab/Spin8_A100_Weight_Edit.ipynb)
+
+The notebook is available from this public repository. You can also download it and upload it to Colab.
+
+The notebook embeds a verified source payload and applies its bundled patch to the pinned upstream commit. It does not automatically follow future changes to this repository's `main` branch.
+
+The defaults perform ordinary Spin8 conversion and evaluate 64 GSM8K questions. Set `MATH_DELTA=True` to enable the mathematical weight difference. To enable direction projection, set `DIRECTION_PATH` to an existing direction file appropriate to the model. Set `BENCHMARK_FULL=True` to evaluate all 1,319 questions. Comparing against the original F16 model requires additional disk space; if a reference model cannot be prepared, improvement is recorded as unmeasured. The workflow does not include a refusal-rate benchmark.
+
+## Licence and attribution
+
+[MIT Licence](LICENSE). The upstream copyright notices and licence are retained. The underlying llama.cpp/ggml project is the work of The ggml authors. AI assistance was used in the design, implementation and validation of the Spin8 extension. Model weights remain subject to their respective licences.

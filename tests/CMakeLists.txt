@@ -230,6 +230,35 @@ if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)
 endif()
 
 llama_build(test-llama-archs.cpp)
+
+add_executable(test-spin8-native ${PROJECT_SOURCE_DIR}/tools/spin8/test-native.cpp)
+target_compile_features(test-spin8-native PRIVATE cxx_std_17)
+target_include_directories(test-spin8-native PRIVATE ${PROJECT_SOURCE_DIR}/vendor)
+target_link_libraries(test-spin8-native PRIVATE llama ggml)
+if (LLAMA_TESTS_INSTALL)
+    install(TARGETS test-spin8-native RUNTIME)
+endif()
+
+set(SPIN8_TEST_MODEL "" CACHE FILEPATH "Native Spin8 GGUF for graph parity testing")
+set(SPIN8_TEST_CONTROL "" CACHE FILEPATH "Decoded F32 control GGUF for graph parity testing")
+if (SPIN8_TEST_MODEL AND SPIN8_TEST_CONTROL)
+    find_package(Python3 REQUIRED COMPONENTS Interpreter)
+    add_test(NAME test-spin8-native-parity
+        COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tools/spin8/verify_native.py
+            --binary $<TARGET_FILE:test-spin8-native>
+            --model ${SPIN8_TEST_MODEL}
+            --control ${SPIN8_TEST_CONTROL}
+            --out-dir ${CMAKE_CURRENT_BINARY_DIR}/spin8-native-parity
+            --ngl 0 --require-spin8-device CPU)
+    set_tests_properties(test-spin8-native-parity PROPERTIES LABELS "behavior;backend;spin8")
+    add_test(NAME test-spin8-native-loader
+        COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tools/spin8/test_loader.py
+            --binary $<TARGET_FILE:test-spin8-native>
+            --fixture ${SPIN8_TEST_MODEL}
+            --out-dir ${CMAKE_CURRENT_BINARY_DIR}/spin8-loader-rejections)
+    set_tests_properties(test-spin8-native-loader PROPERTIES LABELS "behavior;backend;spin8")
+endif()
+
 if (GGML_CPU AND (NOT WIN32 OR NOT BUILD_SHARED_LIBS))
     llama_build(test-fp8.cpp)
     set(FP8_MODEL_DIR "${CMAKE_CURRENT_BINARY_DIR}/test-models-fp8")

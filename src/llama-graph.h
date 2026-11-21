@@ -1179,6 +1179,11 @@ struct llm_graph_context {
               ggml_tensor * w,
               ggml_tensor * cur) const;
 
+    // P*x for P = I - d*d^T/(d^T*d), with a load-time normalized direction.
+    ggml_tensor * build_spin8_projection(
+              ggml_tensor * cur,
+              ggml_tensor * direction) const;
+
     // do mat_mul, while optionally apply lora and per-tensor scale
     ggml_tensor * build_lora_mm(
               ggml_tensor * w,

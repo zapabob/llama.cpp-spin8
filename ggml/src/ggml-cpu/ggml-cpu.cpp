@@ -440,9 +440,21 @@ static bool ggml_backend_cpu_device_supports_op(ggml_backend_dev_t dev, const st
     }
 
     switch (op->op) {
+        case GGML_OP_MUL_MAT_SPIN8:
+        case GGML_OP_GET_ROWS_SPIN8: {
+            const ggml_tensor * bank = op->src[2];
+            return src0->type == GGML_TYPE_SPIN8_G128 && ggml_is_matrix(src0) && ggml_is_contiguous(src0) &&
+                   src0->ne[0] % 128 == 0 && bank && bank->type == GGML_TYPE_F64 && ggml_is_contiguous(bank) &&
+                   bank->ne[0] == 8 && bank->ne[1] == 8 && bank->ne[2] == 9 && bank->ne[3] == 1 &&
+                   op->type == GGML_TYPE_F32 && ggml_is_contiguous(op) &&
+                   (op->op == GGML_OP_MUL_MAT_SPIN8 ?
+                       src1->type == GGML_TYPE_F32 && src1->nb[0] == sizeof(float) && src1->ne[0] == src0->ne[0] :
+                       src1->type == GGML_TYPE_I32 && ggml_is_vector(src1) && ggml_is_contiguous(src1));
+        }
         case GGML_OP_CPY:
         case GGML_OP_SET_ROWS:
             return
+                op->type != GGML_TYPE_SPIN8_G128 && src0->type != GGML_TYPE_SPIN8_G128 &&
                 op->type != GGML_TYPE_IQ3_XXS &&
                 op->type != GGML_TYPE_IQ3_S   &&
                 op->type != GGML_TYPE_IQ2_XXS &&
@@ -451,6 +463,9 @@ static bool ggml_backend_cpu_device_supports_op(ggml_backend_dev_t dev, const st
                 op->type != GGML_TYPE_IQ1_S   &&
                 op->type != GGML_TYPE_IQ1_M; // missing type_traits.from_float
         case GGML_OP_MUL_MAT:
+            if (src0->type == GGML_TYPE_SPIN8_G128) {
+                return false;
+            }
             if (ggml_get_op_params_i32(op, 1) == GGML_HINT_SRC0_IS_HADAMARD &&
                 src0->type == GGML_TYPE_F32 && op->type == GGML_TYPE_F32) {
                 return src1->type == GGML_TYPE_F32 || src1->type == GGML_TYPE_F16;
@@ -474,8 +489,10 @@ static bool ggml_backend_cpu_device_supports_op(ggml_backend_dev_t dev, const st
             return src0->type == GGML_TYPE_F32 && (src1->type == GGML_TYPE_F32 || src1->type == GGML_TYPE_F16);
         case GGML_OP_GET_ROWS_BACK:
             return src0->type == GGML_TYPE_F32 || src0->type == GGML_TYPE_F16;
+        case GGML_OP_GET_ROWS:
+            return src0->type != GGML_TYPE_SPIN8_G128;
         case GGML_OP_OUT_PROD:
-            return (src0->type == GGML_TYPE_F32 ||
+            return src0->type != GGML_TYPE_SPIN8_G128 && (src0->type == GGML_TYPE_F32 ||
                     ((src0->type == GGML_TYPE_F16 || ggml_is_quantized(src0->type)) && src0->ne[2] == src1->ne[2] && src0->ne[3] == src1->ne[3])) &&
                 src1->type == GGML_TYPE_F32 && op->type == GGML_TYPE_F32;
         case GGML_OP_CONV_2D:

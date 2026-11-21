@@ -260,7 +260,8 @@ extern "C" {
         GGML_TYPE_Q1_0    = 41,
         GGML_TYPE_Q2_0    = 42,
         GGML_TYPE_F8_E4M3 = 43,
-        GGML_TYPE_COUNT   = 44,
+        GGML_TYPE_SPIN8_G128 = 44, // private extension, requires spin8.codec_version = 1
+        GGML_TYPE_COUNT   = 45,
     };
 
     // [TAG_GGML_PREC]
@@ -430,6 +431,9 @@ extern "C" {
         GGML_OP_GLU,
 
         GGML_OP_SLEEP,
+
+        GGML_OP_MUL_MAT_SPIN8,
+        GGML_OP_GET_ROWS_SPIN8,
 
         GGML_OP_COUNT,
     };
@@ -1308,6 +1312,20 @@ extern "C" {
             struct ggml_context * ctx,
             struct ggml_tensor  * a,
             struct ggml_tensor  * b);
+
+    // Spin8 weights require the tensor-specific F64 rotation bank [8, 8, 9].
+    // These inference-only operations never materialize a dense weight matrix.
+    GGML_API struct ggml_tensor * ggml_mul_mat_spin8(
+            struct ggml_context * ctx,
+            struct ggml_tensor  * a,
+            struct ggml_tensor  * b,
+            struct ggml_tensor  * bank);
+
+    GGML_API struct ggml_tensor * ggml_get_rows_spin8(
+            struct ggml_context * ctx,
+            struct ggml_tensor  * a,
+            struct ggml_tensor  * ids,
+            struct ggml_tensor  * bank);
 
     // change the hint of a matrix multiplication
     GGML_API void ggml_mul_mat_set_hint(

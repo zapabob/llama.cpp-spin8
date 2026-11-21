@@ -1,0 +1,118 @@
+{
+  "schema": "spin8-colab-payload-v2",
+  "release_date_jst": "2026-11-21",
+  "base_commit": "7fce5439fe451cd48340b112ec37d2befe02c776",
+  "upstream": "https://github.com/ggml-org/llama.cpp.git",
+  "patch_sha256": "2e071b0acf9ed2a8da059c1475170e94fa9496af2acceec1e397d2fe24234fdd",
+  "files": [
+    {
+      "path": "colab_app/baseline.py",
+      "bytes": 8621,
+      "sha256": "d0d481603afb5a96489a5b441861c7552c8797554c22e335f7be75bb923fdc05"
+    },
+    {
+      "path": "colab_app/benchmark.py",
+      "bytes": 42843,
+      "sha256": "f5dfe249c37a281e244fadac1694b92804e2231509e3cffa87c8cb5294b233a1"
+    },
+    {
+      "path": "colab_app/bootstrap.py",
+      "bytes": 33171,
+      "sha256": "594182a9831882fe86677da008098057b985cd59fefa7ea24069b275b24ae0b7"
+    },
+    {
+      "path": "colab_app/hf_fetch.py",
+      "bytes": 22133,
+      "sha256": "21a986bc48212671c9d2c56b291fbd5d3183e286162fab50f378419ff69785ae"
+    },
+    {
+      "path": "colab_app/hf_stream.py",
+      "bytes": 36064,
+      "sha256": "9c2626e6c2598d0f4fb0073b8a805d53dc591081e6a0688d84523cb80508d447"
+    },
+    {
+      "path": "colab_app/pipeline.py",
+      "bytes": 42014,
+      "sha256": "0a90cbf437a8260b30d5ca1baab11565192c985b73282f92107d736c6286a5b8"
+    },
+    {
+      "path": "colab_app/test_benchmark.py",
+      "bytes": 17163,
+      "sha256": "b6da2729a428035ff303190bd1e690a776a972ac7fb434b7bcac36cc39688972"
+    },
+    {
+      "path": "colab_app/test_bootstrap.py",
+      "bytes": 5817,
+      "sha256": "f01a46027acc535f1b1266dccd26273308b11ae67cdd29f4a1f05f8eaa44dc61"
+    },
+    {
+      "path": "colab_app/test_hf_fetch.py",
+      "bytes": 10666,
+      "sha256": "efc3f8f6ec8c3811fd8347be64231b0d3485e8089fb06a5733119fb1ad58603a"
+    },
+    {
+      "path": "colab_app/test_hf_stream.py",
+      "bytes": 17916,
+      "sha256": "c7db3dcca963c15831bf4ccdb9505239990962e91f736f328f339bf75793a627"
+    },
+    {
+      "path": "colab_app/test_pipeline.py",
+      "bytes": 16341,
+      "sha256": "3c4942943e6e7d5ba997a99af5bad5870856cc540cdbf53f157060e6f03c5057"
+    },
+    {
+      "path": "fixtures/tiny-qwen35-decoded.gguf",
+      "bytes": 2923424,
+      "sha256": "9705ff1a8d7d8b891f40902bd52c50fd786d3d4a9c5750c170554f9858af16e2"
+    },
+    {
+      "path": "fixtures/tiny-qwen35-projected-control.gguf",
+      "bytes": 2922272,
+      "sha256": "9ef84aa7a9bd20ec3977476361203c4b7188896b8ac2281fb7e9d6d6e96dd240"
+    },
+    {
+      "path": "fixtures/tiny-qwen35-projected-spin8.gguf",
+      "bytes": 374848,
+      "sha256": "a8ca5b1fc8e16452b9ce9dff24962ae008810554fea9c5839a6da5230ea35a34"
+    },
+    {
+      "path": "fixtures/tiny-qwen35-spin8.gguf",
+      "bytes": 374976,
+      "sha256": "2421f1ae293f579df3a513bc88ca672ce191a56d62c3fb6610887e8a6c0822b5"
+    },
+    {
+      "path": "licenses/LICENSE-llama.cpp",
+      "bytes": 1078,
+      "sha256": "94f29bbed6a22c35b992c5c6ebf0e7c92f13b836b90f36f461c9cf2f0f1d010d"
+    },
+    {
+      "path": "spin8-llama.patch",
+      "bytes": 352044,
+      "sha256": "2e071b0acf9ed2a8da059c1475170e94fa9496af2acceec1e397d2fe24234fdd"
+    }
+  ],
+  "fixture_files": [
+    {
+      "path": "fixtures/tiny-qwen35-decoded.gguf",
+      "bytes": 2923424,
+      "sha256": "9705ff1a8d7d8b891f40902bd52c50fd786d3d4a9c5750c170554f9858af16e2"
+    },
+    {
+      "path": "fixtures/tiny-qwen35-projected-control.gguf",
+      "bytes": 2922272,
+      "sha256": "9ef84aa7a9bd20ec3977476361203c4b7188896b8ac2281fb7e9d6d6e96dd240"
+    },
+    {
+      "path": "fixtures/tiny-qwen35-projected-spin8.gguf",
+      "bytes": 374848,
+      "sha256": "a8ca5b1fc8e16452b9ce9dff24962ae008810554fea9c5839a6da5230ea35a34"
+    },
+    {
+      "path": "fixtures/tiny-qwen35-spin8.gguf",
+      "bytes": 374976,
+      "sha256": "2421f1ae293f579df3a513bc88ca672ce191a56d62c3fb6610887e8a6c0822b5"
+    }
+  ],
+  "real_27b_weights_included": false,
+  "native_runtime_required": true
+}

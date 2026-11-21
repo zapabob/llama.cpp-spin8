@@ -200,6 +200,9 @@ add_library(ggml-base
             ggml-threading.h
             ggml-quants.c
             ggml-quants.h
+            ggml-spin8.cpp
+            ggml-spin8.h
+            ggml-spin8-codec.h
             gguf.cpp)
 
 set_target_properties(ggml-base PROPERTIES

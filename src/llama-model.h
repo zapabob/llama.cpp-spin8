@@ -804,6 +804,16 @@ struct llama_rope_params {
     ggml_tensor * k_norm  = nullptr; // K norm weight applied after RoPE, a K-shift has to undo it
 };
 
+// Optional rank-one weight projection. The stored direction is immutable; the
+// execution maps contain normalized copies on the weights' execution devices.
+struct llama_spin8_projection {
+    ggml_tensor * stored_direction = nullptr;
+    std::unordered_set<std::string> left_names;
+    std::unordered_set<std::string> right_names;
+    std::unordered_map<const ggml_tensor *, ggml_tensor *> left;
+    std::unordered_map<const ggml_tensor *, ggml_tensor *> right;
+};
+
 struct llama_model {
     llm_type type = LLM_TYPE_UNKNOWN;
     llm_arch arch = LLM_ARCH_UNKNOWN;
@@ -817,6 +827,9 @@ struct llama_model {
     llama_prec_policy prec_policy;
 
     llama_hadamard hdmd;
+
+    std::unordered_map<const ggml_tensor *, ggml_tensor *> spin8_banks;
+    llama_spin8_projection spin8_projection;
 
     // see llama_model_set_attn_rot
     bool attn_rot = true;
@@ -1119,6 +1132,10 @@ struct llama_model_base : public llama_model {
 
     // helper: make the prism.hadamard rotation and sign tensors for the folded weights
     void load_tensors_hadamard();
+
+    // Optional projection metadata/auxiliary tensor, then normalized execution copies.
+    void load_spin8_projection(llama_model_loader & ml);
+    void load_tensors_spin8_projection(bool no_alloc = false);
 
     // helper: read the SWA pattern as one flag per layer, or as a period expanded by set_swa_pattern
     void load_swa_pattern(llama_model_loader & ml, uint32_t n_pattern, bool dense_first = false);

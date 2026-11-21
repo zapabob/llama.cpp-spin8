@@ -1805,13 +1805,33 @@ ggml_tensor * llm_graph_context::build_rope_indexer(ggml_tensor * cur, ggml_tens
     return rp.n_rot > 0 && rp.n_offs > 0 ? ggml_rope_set_offset(res, rp.n_offs) : res;
 }
 
+ggml_tensor * llm_graph_context::build_spin8_projection(
+          ggml_tensor * cur,
+          ggml_tensor * direction) const {
+    GGML_ASSERT(cur->ne[0] == direction->ne[0]);
+    // direction is [hidden,1,1,1], dot is [1,...]. Explicit repeats avoid
+    // depending on a backend's support for two-sided broadcasting.
+    ggml_tensor * d = ggml_repeat(ctx0, direction, cur);
+    ggml_tensor * dot = ggml_sum_rows(ctx0, ggml_mul(ctx0, cur, d));
+    ggml_tensor * component = ggml_mul(ctx0, d, ggml_repeat(ctx0, dot, cur));
+    ggml_tensor * projected = ggml_sub(ctx0, cur, component);
+    ggml_set_name(projected, "spin8_projection");
+    return projected;
+}
+
 ggml_tensor * llm_graph_context::build_lora_mm(
           ggml_tensor * w,
           ggml_tensor * cur,
           ggml_tensor * w_s) const {
+    // A right-projected table, including a tied output head, reads P*x.
+    // Apply this before both the Hadamard transform and the LoRA contribution.
+    if (const auto it = model.spin8_projection.right.find(w); it != model.spin8_projection.right.end()) {
+        cur = build_spin8_projection(cur, it->second);
+    }
     // a Hadamard-folded weight reads the transformed input; a LoRA delta lives in the primal basis and reads `cur`
     ggml_tensor * cur_mm = build_hadamard_input(w, cur);
-    ggml_tensor * res = ggml_mul_mat(ctx0, w, cur_mm);
+    ggml_tensor * res = w->type == GGML_TYPE_SPIN8_G128 ?
+        ggml_mul_mat_spin8(ctx0, w, cur_mm, model.spin8_banks.at(w)) : ggml_mul_mat(ctx0, w, cur_mm);
 
     prec_policy.apply(res);
 
@@ -1841,6 +1861,10 @@ ggml_tensor * llm_graph_context::build_lora_mm(
         res = ggml_add(ctx0, res, ab_cur);
     }
 
+    // Project the whole effective residual writer after scales and LoRA.
+    if (const auto it = model.spin8_projection.left.find(w); it != model.spin8_projection.left.end()) {
+        res = build_spin8_projection(res, it->second);
+    }
     return res;
 }
 
@@ -2846,13 +2870,17 @@ ggml_tensor * llm_graph_context::build_inp_embd(ggml_tensor * tok_embd, float to
     // we use ggml_build_forward_order to make the GET_ROWS ops stick at the beginning of the compute graph
     // this way the embeddings remain in the host buffer, and the GET_ROWS run before any other computations
     {
-        embd0 = ggml_get_rows(ctx0, tok_embd, inp->tokens);
+        embd0 = tok_embd->type == GGML_TYPE_SPIN8_G128 ?
+            ggml_get_rows_spin8(ctx0, tok_embd, inp->tokens, model.spin8_banks.at(tok_embd)) :
+            ggml_get_rows(ctx0, tok_embd, inp->tokens);
         ggml_build_forward_order(gf, embd0);
 
         embd1 = inp->embd;
 
         if (has_mixed) {
-            embd2 = ggml_get_rows(ctx0, tok_embd, inp->mixed_tokens);
+            embd2 = tok_embd->type == GGML_TYPE_SPIN8_G128 ?
+                ggml_get_rows_spin8(ctx0, tok_embd, inp->mixed_tokens, model.spin8_banks.at(tok_embd)) :
+                ggml_get_rows(ctx0, tok_embd, inp->mixed_tokens);
             ggml_build_forward_order(gf, embd2);
         }
     }
@@ -2887,6 +2915,11 @@ ggml_tensor * llm_graph_context::build_inp_embd(ggml_tensor * tok_embd, float to
                         ), scale);
 
             cur = ggml_add(ctx0, cur, inpL_delta);
+        }
+
+        // Row lookup of E*P is projected on its hidden (not vocabulary) axis.
+        if (const auto it = model.spin8_projection.right.find(tok_embd); it != model.spin8_projection.right.end()) {
+            cur = build_spin8_projection(cur, it->second);
         }
 
         if (n_embd_inp != n_embd) {

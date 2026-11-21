@@ -24,6 +24,7 @@
 
 #include "ggml.h"
 #include "ggml-cpp.h"
+#include "ggml-spin8.h"
 
 #include <algorithm>
 #include <cassert>
@@ -2011,7 +2012,9 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
         }
     }
 
+    load_spin8_projection(ml);
     ml.done_getting_tensors();
+    spin8_banks = ml.spin8_banks;
 
     if (per_layer_tok_embd && ml.lazy.has(per_layer_tok_embd)) {
         LLAMA_LOG_INFO("%s: enabling prefetch for '%s'\n", __func__, per_layer_tok_embd->name);
@@ -2167,6 +2170,7 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
     }
 
     if (ml.no_alloc) {
+        load_tensors_spin8_projection(true);
         return true;
     }
 
@@ -2185,6 +2189,28 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
         }
     }
 
+    // Validate the external codec before a kernel sees its codes or rotation bank.
+    // Read bounded chunks even when the packed weights reside on a device.
+    if (!ml.no_alloc) {
+        for (const auto & item : spin8_banks) {
+            const ggml_tensor * weight = item.first;
+            double bank[9*8*8];
+            ggml_backend_tensor_get(item.second, bank, 0, sizeof(bank));
+            const size_t row_bytes = ggml_row_size(weight->type, weight->ne[0]);
+            const int64_t chunk_rows = std::max<int64_t>(1, (1024*1024) / row_bytes);
+            std::vector<uint8_t> payload(row_bytes * std::min(chunk_rows, weight->ne[1]));
+            for (int64_t row = 0; row < weight->ne[1]; row += chunk_rows) {
+                const int64_t rows = std::min(chunk_rows, weight->ne[1] - row);
+                const size_t bytes = row_bytes * rows;
+                ggml_backend_tensor_get(weight, payload.data(), row * row_bytes, bytes);
+                const int status = spin8_g128_validate_f64(payload.data(), bytes, bank, 9*8*8, rows, weight->ne[0]);
+                if (status != SPIN8_OK) {
+                    throw std::runtime_error(format("Spin8: invalid tensor '%s': %s", weight->name, spin8_status_string(status)));
+                }
+            }
+        }
+    }
+
     if (use_mmap_buffer) {
         for (auto & mapping : ml.mappings) {
             pimpl->mappings.emplace_back(std::move(mapping));
@@ -2196,8 +2222,136 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
     }
 
     load_tensors_hadamard();
+    load_tensors_spin8_projection();
 
     return true;
+}
+
+void llama_model_base::load_spin8_projection(llama_model_loader & ml) {
+    const char * direction_name = "spin8.projection.direction";
+    const int version_key = gguf_find_key(ml.metadata, "spin8.projection.version");
+    bool present = ml.get_tensor_meta(direction_name) != nullptr;
+    for (int64_t i = 0; i < gguf_get_n_kv(ml.metadata); ++i) {
+        present |= std::string(gguf_get_key(ml.metadata, i)).compare(0, 17, "spin8.projection.") == 0;
+    }
+    if (!present) {
+        return;
+    }
+    if (arch != LLM_ARCH_QWEN35 || version_key < 0 ||
+        gguf_get_kv_type(ml.metadata, version_key) != GGUF_TYPE_UINT32 ||
+        gguf_get_val_u32(ml.metadata, version_key) != 1) {
+        throw std::runtime_error("Spin8 projection: requires qwen35 and UINT32 spin8.projection.version = 1");
+    }
+
+    const std::regex left_pattern("^blk\\.[0-9]+\\.(attn_output|ffn_down|ssm_out)\\.weight$");
+    auto read_names = [&](const char * key_name, bool left, std::unordered_set<std::string> & names) {
+        const int key = gguf_find_key(ml.metadata, key_name);
+        if (key < 0 || gguf_get_kv_type(ml.metadata, key) != GGUF_TYPE_ARRAY ||
+            gguf_get_arr_type(ml.metadata, key) != GGUF_TYPE_STRING) {
+            throw std::runtime_error(format("Spin8 projection: '%s' must be an ARRAY of STRING", key_name));
+        }
+        for (size_t i = 0; i < gguf_get_arr_n(ml.metadata, key); ++i) {
+            const std::string name = gguf_get_arr_str(ml.metadata, key, i);
+            if ((left && !std::regex_match(name, left_pattern)) ||
+                (!left && name != "token_embd.weight")) {
+                throw std::runtime_error(format("Spin8 projection: unsupported %s weight '%s'", left ? "left" : "right", name.c_str()));
+            }
+            if (!names.insert(name).second) {
+                throw std::runtime_error(format("Spin8 projection: duplicate weight '%s'", name.c_str()));
+            }
+            const ggml_tensor * weight = ml.get_tensor_meta(name.c_str());
+            if (!weight || !ggml_is_matrix(weight) || weight->ne[left ? 1 : 0] != hparams.n_embd) {
+                throw std::runtime_error(format("Spin8 projection: '%s' must have hidden_size on its %s axis", name.c_str(), left ? "output" : "input"));
+            }
+        }
+    };
+    read_names("spin8.projection.left_weights", true, spin8_projection.left_names);
+    read_names("spin8.projection.right_weights", false, spin8_projection.right_names);
+    if (spin8_projection.left_names.empty() && spin8_projection.right_names.empty()) {
+        throw std::runtime_error("Spin8 projection: at least one weight must be selected");
+    }
+    spin8_projection.stored_direction = ml.create_spin8_projection_direction(hparams.n_embd);
+}
+
+void llama_model_base::load_tensors_spin8_projection(bool no_alloc) {
+    if (!spin8_projection.stored_direction) {
+        return;
+    }
+    std::vector<float> direction(hparams.n_embd);
+    if (!no_alloc) {
+        ggml_backend_tensor_get(spin8_projection.stored_direction, direction.data(), 0, direction.size()*sizeof(float));
+        double norm_sq = 0;
+        for (float value : direction) {
+            if (!std::isfinite(value)) {
+                throw std::runtime_error("Spin8 projection: direction must contain only finite values");
+            }
+            norm_sq += double(value)*double(value);
+        }
+        if (!(norm_sq > 0) || !std::isfinite(norm_sq)) {
+            throw std::runtime_error("Spin8 projection: direction must be finite and nonzero");
+        }
+        const double norm = std::sqrt(norm_sq);
+        for (float & value : direction) {
+            value = float(double(value)/norm);
+        }
+    }
+
+    // Never overwrite the file-backed direction, which may be mmap read-only.
+    // One small normalized F32 copy per execution buffer type avoids a host
+    // transfer for every projected residual writer on an offloaded model.
+    std::map<ggml_backend_buffer_type_t, ggml_tensor *> copies;
+    for (const auto & entry : tensors_by_name) {
+        const bool left = spin8_projection.left_names.count(entry.first) != 0;
+        const bool right = spin8_projection.right_names.count(entry.first) != 0;
+        if (!left && !right) {
+            continue;
+        }
+        ggml_tensor * weight = entry.second;
+        if (!weight->buffer) {
+            throw std::runtime_error(format("Spin8 projection: weight '%s' has no buffer", entry.first.c_str()));
+        }
+        ggml_backend_buffer_type_t buft = ggml_backend_buffer_get_type(weight->buffer);
+        if (ggml_backend_dev_t dev = ggml_backend_buft_get_device(buft)) {
+            if (ggml_backend_dev_type(dev) == GGML_BACKEND_DEVICE_TYPE_CPU) {
+                buft = ggml_backend_dev_buffer_type(dev);
+            }
+        }
+        auto it = copies.find(buft);
+        if (it == copies.end()) {
+            ggml_init_params params = { ggml_tensor_overhead(), nullptr, true };
+            ggml_context_ptr ctx { ggml_init(params) };
+            if (!ctx) {
+                throw std::runtime_error("Spin8 projection: failed to create normalized direction context");
+            }
+            ggml_tensor * tensor = ggml_new_tensor_1d(ctx.get(), GGML_TYPE_F32, hparams.n_embd);
+            ggml_set_name(tensor, "spin8.projection.unit_direction");
+            ggml_backend_buffer_ptr buffer { no_alloc ? ggml_backend_buft_alloc_buffer(buft, 0) :
+                ggml_backend_alloc_ctx_tensors_from_buft(ctx.get(), buft) };
+            if (!buffer) {
+                throw std::runtime_error("Spin8 projection: failed to allocate normalized direction buffer");
+            }
+            ggml_backend_buffer_set_usage(buffer.get(), GGML_BACKEND_BUFFER_USAGE_WEIGHTS);
+            if (no_alloc) {
+                // Match normal graph shapes/device placement without reading
+                // unloaded data. memory_breakdown() sizes this context later.
+                tensor->buffer = buffer.get();
+            } else {
+                ggml_backend_tensor_set(tensor, direction.data(), 0, direction.size()*sizeof(float));
+            }
+            std::vector<ggml_backend_buffer_ptr> buffers;
+            buffers.emplace_back(std::move(buffer));
+            pimpl->ctxs_bufs.emplace_back(std::move(ctx), std::move(buffers));
+            it = copies.emplace(buft, tensor).first;
+        }
+        if (left) {
+            spin8_projection.left.emplace(weight, it->second);
+        }
+        if (right) {
+            spin8_projection.right.emplace(weight, it->second);
+        }
+    }
+    LLAMA_LOG_INFO("%s: %zu left and %zu right active weights, %zu normalized direction buffers\n",
+        __func__, spin8_projection.left.size(), spin8_projection.right.size(), copies.size());
 }
 
 // read and check the prism.hadamard metadata, and record the folded weights (load_tensors_hadamard makes the tensors)
@@ -4192,13 +4346,24 @@ uint32_t llama_model_target_layer_ids_n(const struct llama_model * model) {
 }
 
 // read rows [row0, row0 + n_rows) of a 2D tensor as F32
-static void llama_tensor_rows_to_f32(const ggml_tensor * tensor, int64_t row0, int64_t n_rows, float * out) {
+static void llama_tensor_rows_to_f32(const llama_model * model, const ggml_tensor * tensor, int64_t row0, int64_t n_rows, float * out) {
     const size_t   nelements = (size_t) n_rows * tensor->ne[0];
     const size_t   offset    = (size_t) row0 * tensor->nb[1];
     const size_t   nbytes    = ggml_row_size(tensor->type, tensor->ne[0]) * n_rows;
 
     if (tensor->type == GGML_TYPE_F32) {
         ggml_backend_tensor_get(tensor, out, offset, nbytes);
+        return;
+    }
+
+    if (tensor->type == GGML_TYPE_SPIN8_G128) {
+        double bank[9*8*8];
+        ggml_backend_tensor_get(model->spin8_banks.at(tensor), bank, 0, sizeof(bank));
+        std::vector<uint8_t> row_data(tensor->nb[1]);
+        for (int64_t row = 0; row < n_rows; ++row) {
+            ggml_backend_tensor_get(tensor, row_data.data(), offset + row*tensor->nb[1], row_data.size());
+            spin8_g128_decode_row_f32(row_data.data(), bank, out + row*tensor->ne[0], tensor->ne[0]);
+        }
         return;
     }
 
@@ -4230,7 +4395,7 @@ uint32_t llama_model_get_tok_embd(const struct llama_model * model, float * out)
         return (uint32_t) nelements;
     }
 
-    llama_tensor_rows_to_f32(tensor, 0, tensor->ne[1], out);
+    llama_tensor_rows_to_f32(model, tensor, 0, tensor->ne[1], out);
 
     return (uint32_t) nelements;
 }
@@ -4253,7 +4418,7 @@ uint32_t llama_model_get_tok_embd_rows(const struct llama_model * model, const l
         if (tokens[i] < 0 || tokens[i] >= tensor->ne[1]) {
             return 0;
         }
-        llama_tensor_rows_to_f32(tensor, tokens[i], 1, out + (size_t) i * tensor->ne[0]);
+        llama_tensor_rows_to_f32(model, tensor, tokens[i], 1, out + (size_t) i * tensor->ne[0]);
     }
 
     return n_tokens * (uint32_t) tensor->ne[0];

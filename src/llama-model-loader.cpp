@@ -41,6 +41,7 @@ const char * llama_ftype_name(llama_ftype ftype) {
         case LLAMA_FTYPE_MOSTLY_Q1_0:      name = LLAMA_FTYPE_PREFIX "Q1_0"; break;
         case LLAMA_FTYPE_MOSTLY_Q2_0:      name = LLAMA_FTYPE_PREFIX "Q2_0"; break;
         case LLAMA_FTYPE_MOSTLY_F8_E4M3:   name = LLAMA_FTYPE_PREFIX "F8_E4M3"; break;
+        case LLAMA_FTYPE_MOSTLY_SPIN8_G128: name = LLAMA_FTYPE_PREFIX "Spin8 G128 v1 (private)"; break;
         case LLAMA_FTYPE_MOSTLY_Q4_0:      name = LLAMA_FTYPE_PREFIX "Q4_0"; break;
         case LLAMA_FTYPE_MOSTLY_Q4_1:      name = LLAMA_FTYPE_PREFIX "Q4_1"; break;
         case LLAMA_FTYPE_MOSTLY_Q5_0:      name = LLAMA_FTYPE_PREFIX "Q5_0"; break;
@@ -838,7 +839,11 @@ llama_model_loader::llama_model_loader(
             }
         }
 
+        if (n_type.count(GGML_TYPE_SPIN8_G128)) {
+            type_max = GGML_TYPE_SPIN8_G128;
+        }
         switch (type_max) {
+            case GGML_TYPE_SPIN8_G128: ftype = LLAMA_FTYPE_MOSTLY_SPIN8_G128; break;
             case GGML_TYPE_F32:     ftype = LLAMA_FTYPE_ALL_F32;        break;
             case GGML_TYPE_F16:     ftype = LLAMA_FTYPE_MOSTLY_F16;     break;
             case GGML_TYPE_BF16:    ftype = LLAMA_FTYPE_MOSTLY_BF16;    break;
@@ -1031,12 +1036,19 @@ static bool weight_buft_supported(const llama_hparams & hparams, ggml_tensor * w
     ggml_context * ctx = ctx_ptr.get();
 
     ggml_tensor * op_tensor = nullptr;
+    ggml_tensor * spin8_bank = nullptr;
+    if (w->type == GGML_TYPE_SPIN8_G128) {
+        if (!ggml_is_matrix(w) || (op != GGML_OP_MUL_MAT && op != GGML_OP_GET_ROWS)) {
+            throw std::runtime_error(format("Spin8: unsupported operation %s for '%s'", ggml_op_name(op), w->name));
+        }
+        spin8_bank = ggml_new_tensor_3d(ctx, GGML_TYPE_F64, 8, 8, 9);
+    }
 
     switch (op) {
         case GGML_OP_GET_ROWS:
             {
                 ggml_tensor * b = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, 512);
-                op_tensor = ggml_get_rows(ctx, w, b);
+                op_tensor = spin8_bank ? ggml_get_rows_spin8(ctx, w, b, spin8_bank) : ggml_get_rows(ctx, w, b);
             } break;
         case GGML_OP_SET_ROWS:
             {
@@ -1048,7 +1060,7 @@ static bool weight_buft_supported(const llama_hparams & hparams, ggml_tensor * w
         case GGML_OP_MUL_MAT:
             {
                 ggml_tensor * b = ggml_new_tensor_4d(ctx, GGML_TYPE_F32, w->ne[0], 512, w->ne[2], w->ne[3]);
-                op_tensor = ggml_mul_mat(ctx, w, b);
+                op_tensor = spin8_bank ? ggml_mul_mat_spin8(ctx, w, b, spin8_bank) : ggml_mul_mat(ctx, w, b);
             } break;
         case GGML_OP_MUL_MAT_ID:
             {
@@ -1221,7 +1233,7 @@ struct ggml_tensor * llama_model_loader::create_tensor(
         if (it == ctx_map.end()) {
             // one ggml context per buffer type
             int max_n_tensors = n_tensors;
-            max_n_tensors += 1;                   // duplicated output tensor
+            max_n_tensors += 2;                   // duplicated output tensor and optional Spin8 bank
             max_n_tensors += hparams.n_layer()*2; // duplicated rope freq tensors
             if (files.empty()) {
                 max_n_tensors += hparams.n_layer()*256; // this should be well above what any model actually uses
@@ -1276,6 +1288,19 @@ struct ggml_tensor * llama_model_loader::create_tensor(
 
             size_data -= nbytes;
             n_created++;
+
+            if (t_meta->type == GGML_TYPE_SPIN8_G128) {
+                const std::string bank_name = std::string(t_meta->name) + ".spin8_bank";
+                const ggml_tensor * bank = get_tensor_meta(bank_name.c_str());
+                if (!bank || bank->type != GGML_TYPE_F64 ||
+                    bank->ne[0] != 8 || bank->ne[1] != 8 || bank->ne[2] != 9 || bank->ne[3] != 1) {
+                    throw std::runtime_error(format("Spin8: skipped weight '%s' requires an F64 [8,8,9] bank", t_meta->name));
+                }
+                if (spin8_bank_names.insert(bank_name).second) {
+                    size_data -= ggml_nbytes(bank);
+                    n_created++;
+                }
+            }
 
             return nullptr;
         }
@@ -1440,6 +1465,16 @@ struct ggml_tensor * llama_model_loader::create_tensor(
     }
 
     ggml_tensor t_meta = *cur;
+    if (t_meta.type == GGML_TYPE_SPIN8_G128) {
+        const int key = gguf_find_key(metadata, "spin8.codec_version");
+        if (arch_name != "qwen35" || key < 0 || gguf_get_kv_type(metadata, key) != GGUF_TYPE_UINT32 ||
+            gguf_get_val_u32(metadata, key) != 1) {
+            throw std::runtime_error("Spin8: requires qwen35 architecture and UINT32 spin8.codec_version = 1");
+        }
+        if (!ggml_is_matrix(cur) || cur->ne[0] % 128 != 0 || is_lazy) {
+            throw std::runtime_error(format("Spin8: invalid matrix shape or lazy tensor '%s'", cur->name));
+        }
+    }
     if (flags & TENSOR_ALLOW_RESHAPE) {
         for (size_t dim = 0; dim < GGML_MAX_DIMS; dim++) {
             t_meta.ne[dim] = dim < ne.size() ? ne.begin()[dim] : 1;
@@ -1481,7 +1516,53 @@ struct ggml_tensor * llama_model_loader::create_tensor(
         n_created++;
     }
 
+    if (tensor->type == GGML_TYPE_SPIN8_G128) {
+        const std::string bank_name = std::string(tensor->name) + ".spin8_bank";
+        const ggml_tensor * bank_meta = get_tensor_meta(bank_name.c_str());
+        if (!bank_meta || bank_meta->type != GGML_TYPE_F64 ||
+            bank_meta->ne[0] != 8 || bank_meta->ne[1] != 8 || bank_meta->ne[2] != 9 || bank_meta->ne[3] != 1) {
+            throw std::runtime_error(format("Spin8: '%s' requires an F64 [8,8,9] bank", tensor->name));
+        }
+        ggml_tensor * bank = ggml_get_tensor(ctx, bank_name.c_str());
+        if (!bank) {
+            bank = ggml_dup_tensor(ctx, bank_meta);
+            ggml_set_name(bank, bank_name.c_str());
+            if (spin8_bank_names.insert(bank_name).second) {
+                n_created++;
+            } else {
+                size_data += ggml_nbytes(bank);
+            }
+        }
+        spin8_banks.emplace(tensor, bank);
+    }
+
     return tensor;
+}
+
+struct ggml_tensor * llama_model_loader::create_spin8_projection_direction(int64_t width) {
+    const char * name = "spin8.projection.direction";
+    const ggml_tensor * meta = get_tensor_meta(name);
+    if (!meta || meta->type != GGML_TYPE_F32 || meta->ne[0] != width ||
+        meta->ne[1] != 1 || meta->ne[2] != 1 || meta->ne[3] != 1) {
+        throw std::runtime_error("Spin8 projection: requires an F32 [hidden_size] direction tensor");
+    }
+    const ctx_key key { ggml_backend_cpu_buffer_type(), false };
+    auto it = ctx_map.find(key);
+    if (it == ctx_map.end()) {
+        ggml_init_params params = { ggml_tensor_overhead()*(n_tensors + 4), nullptr, true };
+        ggml_context_ptr ctx { ggml_init(params) };
+        if (!ctx) {
+            throw std::runtime_error("Spin8 projection: failed to create direction context");
+        }
+        it = ctx_map.emplace(key, std::move(ctx)).first;
+    }
+    if (ggml_get_tensor(it->second.get(), name)) {
+        throw std::runtime_error("Spin8 projection: duplicate direction tensor");
+    }
+    ggml_tensor * direction = ggml_dup_tensor(it->second.get(), meta);
+    ggml_set_name(direction, name);
+    n_created++;
+    return direction;
 }
 
 void llama_model_loader::done_getting_tensors(bool partial) const {

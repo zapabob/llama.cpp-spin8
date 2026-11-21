@@ -8,6 +8,7 @@
 #include "ggml-impl.h"
 #include "quants.h"
 #include "ggml-threading.h"
+#include "ggml-spin8.h"
 #include "unary-ops.h"
 #include "binary-ops.h"
 #include "vec.h"
@@ -1757,6 +1758,35 @@ static void ggml_compute_forward_mul_mat_id(
 
 /////////////////////////////////
 
+static void ggml_compute_forward_mul_mat_spin8(const struct ggml_compute_params * params, struct ggml_tensor * dst) {
+    const struct ggml_tensor * w = dst->src[0];
+    const struct ggml_tensor * x = dst->src[1];
+    const double * bank = (const double *) dst->src[2]->data;
+    const int64_t rows = w->ne[1];
+    const int64_t n = ggml_nelements(dst);
+    for (int64_t i = params->ith; i < n; i += params->nth) {
+        const int64_t row = i % rows;
+        const int64_t token = i / rows;
+        const int64_t i1 = token % x->ne[1];
+        const int64_t i2 = token / x->ne[1] % x->ne[2];
+        const int64_t i3 = token / (x->ne[1] * x->ne[2]);
+        const float * input = (const float *) ((const char *) x->data + i1*x->nb[1] + i2*x->nb[2] + i3*x->nb[3]);
+        const uint8_t * packed = (const uint8_t *) w->data + row*w->nb[1];
+        ((float *) dst->data)[i] = (float) spin8_g128_dot_f64(packed, bank, input, w->ne[0]);
+    }
+}
+
+static void ggml_compute_forward_get_rows_spin8(const struct ggml_compute_params * params, struct ggml_tensor * dst) {
+    const struct ggml_tensor * w = dst->src[0];
+    const int32_t * ids = (const int32_t *) dst->src[1]->data;
+    const double * bank = (const double *) dst->src[2]->data;
+    for (int64_t i = params->ith; i < dst->ne[1]; i += params->nth) {
+        GGML_ASSERT(ids[i] >= 0 && ids[i] < w->ne[1]);
+        spin8_g128_decode_row_f32((const uint8_t *) w->data + ids[i]*w->nb[1], bank,
+                                 (float *) ((char *) dst->data + i*dst->nb[1]), w->ne[0]);
+    }
+}
+
 static void ggml_compute_forward(struct ggml_compute_params * params, struct ggml_tensor * tensor) {
     GGML_ASSERT(params);
 
@@ -1770,6 +1800,12 @@ static void ggml_compute_forward(struct ggml_compute_params * params, struct ggm
     }
 
     switch (tensor->op) {
+        case GGML_OP_MUL_MAT_SPIN8:
+            ggml_compute_forward_mul_mat_spin8(params, tensor);
+            break;
+        case GGML_OP_GET_ROWS_SPIN8:
+            ggml_compute_forward_get_rows_spin8(params, tensor);
+            break;
         case GGML_OP_DUP:
             {
                 ggml_compute_forward_dup(params, tensor);
@@ -2376,6 +2412,8 @@ static int ggml_get_n_tasks(struct ggml_tensor * node, int n_threads) {
         case GGML_OP_CONCAT:
         case GGML_OP_MUL_MAT:
         case GGML_OP_MUL_MAT_ID:
+        case GGML_OP_MUL_MAT_SPIN8:
+        case GGML_OP_GET_ROWS_SPIN8:
         case GGML_OP_OUT_PROD:
         case GGML_OP_SET_ROWS:
             {
