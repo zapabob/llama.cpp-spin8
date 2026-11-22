@@ -574,13 +574,33 @@ def prepare(args: argparse.Namespace) -> dict:
                 require_cuda_execution(reports / "codec-cuda.json")
         verify = [sys.executable, str(scripts / "verify_native.py"), "--binary", str(build / "bin/test-spin8-native"),
                   "--ngl", "99" if args.device == "cuda" else "0", "--control-ngl", "0",
+                  "--cache-type", "f32", "--atol", "1e-4", "--rtol", "1e-4",
                   "--require-spin8-op", "MUL_MAT_SPIN8", "--require-spin8-device",
                   "CUDA" if args.device == "cuda" else "CPU"]
+        # Isolate codec/runtime parity from F16 cache rounding and the TF32 MMF
+        # path. These settings apply only to the two parity child processes.
+        parity_environment = environment.copy()
+        if args.device == "cuda":
+            parity_environment.update({"GGML_CUDA_SPIN8_VALIDATE_F32": "1", "NVIDIA_TF32_OVERRIDE": "0"})
+        report["parity_precision_profile"] = {
+            "stages": ["native-parity", "projected-native-parity"],
+            "cache_type_k": "f32", "cache_type_v": "f32", "atol": 1e-4, "rtol": 1e-4,
+            "control_device": "CPU",
+            "precision_environment": {
+                name: parity_environment.get(name)
+                for name in ("GGML_CUDA_SPIN8_VALIDATE_F32", "NVIDIA_TF32_OVERRIDE",
+                             "GGML_CUDA_CUBLAS_COMPUTE_TYPE")
+            },
+            "ordinary_f32_matmul": "cuBLAS F32" if args.device == "cuda" else "CPU",
+            "spin8_kernels": "unchanged",
+            "server_smoke_uses_parity_environment": False,
+        }
         for name, model, control in (("native-parity", FIXTURES[0], FIXTURES[1]),
                                       ("projected-native-parity", FIXTURES[2], FIXTURES[3])):
             with stage(name):
                 run([*verify, "--model", str(payload / "fixtures" / model), "--control", str(payload / "fixtures" / control),
-                     "--out-dir", str(reports / name)], log=reports / (name + ".log"), console_limit=25)
+                     "--out-dir", str(reports / name)], log=reports / (name + ".log"),
+                    env=parity_environment, console_limit=25)
                 parity = require_parity(reports / name / "parity.json")
                 print(json.dumps({"status": "PASS", "check": name,
                                   "max_absolute_error": parity["comparison"]["max_absolute_error"],

@@ -2536,6 +2536,14 @@ static bool ggml_cuda_should_fuse_mul_mat_q(const ggml_tensor * up, const ggml_t
 static void ggml_cuda_mul_mat(ggml_backend_cuda_context & ctx, const ggml_tensor * src0, const ggml_tensor * src1, ggml_tensor * dst) {
     GGML_TENSOR_BINARY_OP_LOCALS
 
+    static const bool spin8_validate_f32 = ggml_cuda_env_flag("GGML_CUDA_SPIN8_VALIDATE_F32");
+    if (spin8_validate_f32 && src0->type == GGML_TYPE_F32 &&
+            src1->type == GGML_TYPE_F32 && dst->type == GGML_TYPE_F32) {
+        // MMF uses TF32 instructions for F32 tensors. Use cuBLAS with NVIDIA_TF32_OVERRIDE=0 for parity checks.
+        ggml_cuda_mul_mat_cublas_impl<GGML_TYPE_F32>(ctx, src0, src1, dst);
+        return;
+    }
+
     if (ggml_cuda_op_mul_mat_use_fwht(dst) && ggml_cuda_op_fwht(ctx, src1, dst)) {
         return;
     }

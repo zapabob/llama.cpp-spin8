@@ -29,6 +29,7 @@ struct options {
     int ngl = 0;
     int threads = 2;
     uint32_t context = 128;
+    ggml_type cache_type = GGML_TYPE_F16;
     llama_flash_attn_type flash_attn = LLAMA_FLASH_ATTN_TYPE_DISABLED;
     llama_load_mode load_mode = LLAMA_LOAD_MODE_AUTO;
     bool no_alloc = false;
@@ -49,6 +50,7 @@ static void print_usage(const char * executable) {
               << "  --device NAME           Select a registered backend device\n"
               << "  --threads N             CPU threads (default: 2)\n"
               << "  --ctx N                 Context size (default: 128)\n"
+              << "  --cache-type f16|f32    K/V cache storage type (default: f16)\n"
               << "  --flash-attn off|on|auto (default: off)\n"
               << "  --mmap | --no-mmap      Force mapped or ordinary model loading\n"
               << "  --no-alloc              Shape-only memory-fit graph; no inference\n"
@@ -108,6 +110,14 @@ static options parse_options(int argc, char ** argv) {
             result.threads = parse_int(value, 1, 1024);
         } else if (arg == "--ctx") {
             result.context = parse_int(value, 1, std::numeric_limits<int32_t>::max());
+        } else if (arg == "--cache-type") {
+            if (value == "f16") {
+                result.cache_type = GGML_TYPE_F16;
+            } else if (value == "f32") {
+                result.cache_type = GGML_TYPE_F32;
+            } else {
+                throw std::runtime_error("invalid cache type: " + value);
+            }
         } else if (arg == "--prompt-tokens") {
             result.prompt = parse_tokens(value);
         } else if (arg == "--decode-tokens") {
@@ -337,6 +347,8 @@ static void run(const options & opts, observations & state, json & report) {
     context_params.n_seq_max = 1;
     context_params.n_threads = opts.threads;
     context_params.n_threads_batch = opts.threads;
+    context_params.type_k = opts.cache_type;
+    context_params.type_v = opts.cache_type;
     context_params.flash_attn_type = opts.flash_attn;
     context_params.no_perf = false;
     context_params.cb_eval = eval_callback;
@@ -350,6 +362,8 @@ static void run(const options & opts, observations & state, json & report) {
         throw std::runtime_error("context creation failed; see native log");
     }
     report["n_ctx_actual"] = llama_n_ctx(ctx.get());
+    report["cache_type_k"] = ggml_type_name(context_params.type_k);
+    report["cache_type_v"] = ggml_type_name(context_params.type_v);
     if (opts.no_alloc) {
         report["scope"] = "shape-only model and context graph construction; no tensor execution or numerical validation";
         report["no_alloc_graph_created"] = true;

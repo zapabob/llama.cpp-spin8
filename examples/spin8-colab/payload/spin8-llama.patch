@@ -230,7 +230,7 @@ index cd81347..2d5d912 100644
              {
                  GGML_ABORT("fatal error");
 diff --git a/ggml/src/ggml-cuda/ggml-cuda.cu b/ggml/src/ggml-cuda/ggml-cuda.cu
-index a58f020..e30faac 100644
+index a58f020..99b29b6 100644
 --- a/ggml/src/ggml-cuda/ggml-cuda.cu
 +++ b/ggml/src/ggml-cuda/ggml-cuda.cu
 @@ -30,6 +30,7 @@
@@ -241,7 +241,22 @@ index a58f020..e30faac 100644
  #include "ggml-cuda/im2col.cuh"
  #include "ggml-cuda/mmf.cuh"
  #include "ggml-cuda/mmq.cuh"
-@@ -2809,6 +2810,12 @@ static void ggml_cuda_mul_mat_id(ggml_backend_cuda_context & ctx, ggml_tensor *
+@@ -2535,6 +2536,14 @@ static bool ggml_cuda_should_fuse_mul_mat_q(const ggml_tensor * up, const ggml_t
+ static void ggml_cuda_mul_mat(ggml_backend_cuda_context & ctx, const ggml_tensor * src0, const ggml_tensor * src1, ggml_tensor * dst) {
+     GGML_TENSOR_BINARY_OP_LOCALS
+ 
++    static const bool spin8_validate_f32 = ggml_cuda_env_flag("GGML_CUDA_SPIN8_VALIDATE_F32");
++    if (spin8_validate_f32 && src0->type == GGML_TYPE_F32 &&
++            src1->type == GGML_TYPE_F32 && dst->type == GGML_TYPE_F32) {
++        // MMF uses TF32 instructions for F32 tensors. Use cuBLAS with NVIDIA_TF32_OVERRIDE=0 for parity checks.
++        ggml_cuda_mul_mat_cublas_impl<GGML_TYPE_F32>(ctx, src0, src1, dst);
++        return;
++    }
++
+     if (ggml_cuda_op_mul_mat_use_fwht(dst) && ggml_cuda_op_fwht(ctx, src1, dst)) {
+         return;
+     }
+@@ -2809,6 +2818,12 @@ static void ggml_cuda_mul_mat_id(ggml_backend_cuda_context & ctx, ggml_tensor *
  
  static bool ggml_cuda_compute_forward(ggml_backend_cuda_context & ctx, struct ggml_tensor * dst) {
      switch (dst->op) {
@@ -254,7 +269,7 @@ index a58f020..e30faac 100644
          case GGML_OP_ARGMAX:
              ggml_cuda_argmax(ctx, dst);
              break;
-@@ -6345,6 +6352,19 @@ static bool ggml_backend_cuda_device_supports_op(ggml_backend_dev_t dev, const g
+@@ -6345,6 +6360,19 @@ static bool ggml_backend_cuda_device_supports_op(ggml_backend_dev_t dev, const g
      }
  
      switch (op->op) {
@@ -4773,10 +4788,10 @@ index 0000000..d62ea4e
 +        return loaded
 diff --git a/tools/spin8/test-native.cpp b/tools/spin8/test-native.cpp
 new file mode 100644
-index 0000000..ca39a6a
+index 0000000..43e75cf
 --- /dev/null
 +++ b/tools/spin8/test-native.cpp
-@@ -0,0 +1,460 @@
+@@ -0,0 +1,474 @@
 +#include "llama.h"
 +#include "llama-cpp.h"
 +#include "ggml-backend.h"
@@ -4808,6 +4823,7 @@ index 0000000..ca39a6a
 +    int ngl = 0;
 +    int threads = 2;
 +    uint32_t context = 128;
++    ggml_type cache_type = GGML_TYPE_F16;
 +    llama_flash_attn_type flash_attn = LLAMA_FLASH_ATTN_TYPE_DISABLED;
 +    llama_load_mode load_mode = LLAMA_LOAD_MODE_AUTO;
 +    bool no_alloc = false;
@@ -4828,6 +4844,7 @@ index 0000000..ca39a6a
 +              << "  --device NAME           Select a registered backend device\n"
 +              << "  --threads N             CPU threads (default: 2)\n"
 +              << "  --ctx N                 Context size (default: 128)\n"
++              << "  --cache-type f16|f32    K/V cache storage type (default: f16)\n"
 +              << "  --flash-attn off|on|auto (default: off)\n"
 +              << "  --mmap | --no-mmap      Force mapped or ordinary model loading\n"
 +              << "  --no-alloc              Shape-only memory-fit graph; no inference\n"
@@ -4887,6 +4904,14 @@ index 0000000..ca39a6a
 +            result.threads = parse_int(value, 1, 1024);
 +        } else if (arg == "--ctx") {
 +            result.context = parse_int(value, 1, std::numeric_limits<int32_t>::max());
++        } else if (arg == "--cache-type") {
++            if (value == "f16") {
++                result.cache_type = GGML_TYPE_F16;
++            } else if (value == "f32") {
++                result.cache_type = GGML_TYPE_F32;
++            } else {
++                throw std::runtime_error("invalid cache type: " + value);
++            }
 +        } else if (arg == "--prompt-tokens") {
 +            result.prompt = parse_tokens(value);
 +        } else if (arg == "--decode-tokens") {
@@ -5116,6 +5141,8 @@ index 0000000..ca39a6a
 +    context_params.n_seq_max = 1;
 +    context_params.n_threads = opts.threads;
 +    context_params.n_threads_batch = opts.threads;
++    context_params.type_k = opts.cache_type;
++    context_params.type_v = opts.cache_type;
 +    context_params.flash_attn_type = opts.flash_attn;
 +    context_params.no_perf = false;
 +    context_params.cb_eval = eval_callback;
@@ -5129,6 +5156,8 @@ index 0000000..ca39a6a
 +        throw std::runtime_error("context creation failed; see native log");
 +    }
 +    report["n_ctx_actual"] = llama_n_ctx(ctx.get());
++    report["cache_type_k"] = ggml_type_name(context_params.type_k);
++    report["cache_type_v"] = ggml_type_name(context_params.type_v);
 +    if (opts.no_alloc) {
 +        report["scope"] = "shape-only model and context graph construction; no tensor execution or numerical validation";
 +        report["no_alloc_graph_created"] = true;
@@ -6823,10 +6852,10 @@ index 0000000..32c3397
 +    print(json.dumps(diagnostics(), indent=2))
 diff --git a/tools/spin8/verify_native.py b/tools/spin8/verify_native.py
 new file mode 100644
-index 0000000..510ba4d
+index 0000000..bb8f9f8
 --- /dev/null
 +++ b/tools/spin8/verify_native.py
-@@ -0,0 +1,205 @@
+@@ -0,0 +1,219 @@
 +#!/usr/bin/env python3
 +"""Compare native Spin8 logits against the decoded F32 version of the same weights."""
 +
@@ -6837,6 +6866,7 @@ index 0000000..510ba4d
 +import hashlib
 +import json
 +import math
++import os
 +from pathlib import Path
 +import subprocess
 +import sys
@@ -6881,6 +6911,7 @@ index 0000000..510ba4d
 +    command = [
 +        str(args.binary), "--model", str(model), "--output-prefix", str(prefix),
 +        "--ngl", str(ngl), "--threads", str(args.threads), "--ctx", str(args.ctx),
++        "--cache-type", args.cache_type,
 +        "--flash-attn", args.flash_attn, "--prompt-tokens", args.prompt_tokens,
 +        "--decode-tokens", args.decode_tokens,
 +    ]
@@ -6921,9 +6952,13 @@ index 0000000..510ba4d
 +
 +
 +def compare(args: argparse.Namespace, actual: dict, control: dict) -> dict:
-+    for key in ("prompt_tokens", "decode_tokens", "logits_shape", "n_vocab", "n_embd", "n_layer"):
++    for key in ("prompt_tokens", "decode_tokens", "logits_shape", "n_vocab", "n_embd", "n_layer",
++                "cache_type_k", "cache_type_v"):
 +        if actual[key] != control[key]:
 +            raise ValueError(f"execution mismatch: {key}")
++    for metadata in (actual, control):
++        if metadata["cache_type_k"] != args.cache_type or metadata["cache_type_v"] != args.cache_type:
++            raise ValueError("execution cache types differ from --cache-type")
 +    row_ids = lambda value: [(row["phase"], row["position"], row["input_token"]) for row in value["rows"]]
 +    if row_ids(actual) != row_ids(control):
 +        raise ValueError("logit row identities do not match")
@@ -6963,6 +6998,7 @@ index 0000000..510ba4d
 +        "status": "PASS" if violations == 0 and device_verified is not False else "FAIL",
 +        "scope": "native graph parity against decoded codec weights; not source-BF16 accuracy or language quality",
 +        "atol": args.atol, "rtol": args.rtol,
++        "cache_type_k": actual["cache_type_k"], "cache_type_v": actual["cache_type_v"],
 +        "elements": len(values), "tolerance_violations": violations,
 +        "max_absolute_error": maximum,
 +        "rmse": math.sqrt(squared_error / len(values)),
@@ -6990,6 +7026,8 @@ index 0000000..510ba4d
 +    parser.add_argument("--device", default="")
 +    parser.add_argument("--threads", type=int, default=2)
 +    parser.add_argument("--ctx", type=int, default=128)
++    parser.add_argument("--cache-type", choices=("f16", "f32"), default="f16",
++                        help="K/V cache storage type for both executions; use f32 to isolate cache rounding")
 +    parser.add_argument("--flash-attn", choices=("off", "on", "auto"), default="off")
 +    loading = parser.add_mutually_exclusive_group()
 +    loading.add_argument("--mmap", dest="mmap", action="store_true", default=None)
@@ -7014,6 +7052,11 @@ index 0000000..510ba4d
 +        "schema": "spin8-native-parity-v1", "status": "FAIL",
 +        "timestamp_utc": datetime.now(timezone.utc).isoformat(),
 +        "runtime_executable": artifact(args.binary), "source": source_identity(),
++        "precision_environment": {
++            name: os.environ.get(name)
++            for name in ("GGML_CUDA_SPIN8_VALIDATE_F32", "NVIDIA_TF32_OVERRIDE",
++                         "GGML_CUDA_CUBLAS_COMPUTE_TYPE")
++        },
 +    }
 +    try:
 +        control_ngl = args.ngl if args.control_ngl is None else args.control_ngl

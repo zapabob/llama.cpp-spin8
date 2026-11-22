@@ -1,9 +1,9 @@
 {
   "schema": "spin8-colab-payload-v2",
-  "release_date_jst": "2026-11-21",
+  "release_date_jst": "2026-11-23",
   "base_commit": "7fce5439fe451cd48340b112ec37d2befe02c776",
   "upstream": "https://github.com/ggml-org/llama.cpp.git",
-  "patch_sha256": "2e071b0acf9ed2a8da059c1475170e94fa9496af2acceec1e397d2fe24234fdd",
+  "patch_sha256": "a2cd9930c7446e2a78cc2f5189a8880757cd4e58757d1dd00cd587aca06857a1",
   "files": [
     {
       "path": "colab_app/baseline.py",
@@ -17,8 +17,8 @@
     },
     {
       "path": "colab_app/bootstrap.py",
-      "bytes": 33171,
-      "sha256": "594182a9831882fe86677da008098057b985cd59fefa7ea24069b275b24ae0b7"
+      "bytes": 34323,
+      "sha256": "e41952b514db56f50d56b7791c1db467ac55a985ef4959b11a91a8980f66e154"
     },
     {
       "path": "colab_app/hf_fetch.py",
@@ -87,8 +87,8 @@
     },
     {
       "path": "spin8-llama.patch",
-      "bytes": 352044,
-      "sha256": "2e071b0acf9ed2a8da059c1475170e94fa9496af2acceec1e397d2fe24234fdd"
+      "bytes": 354410,
+      "sha256": "a2cd9930c7446e2a78cc2f5189a8880757cd4e58757d1dd00cd587aca06857a1"
     }
   ],
   "fixture_files": [

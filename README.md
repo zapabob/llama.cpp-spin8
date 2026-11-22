@@ -10,16 +10,21 @@ The upstream base is [ggml-org/llama.cpp](https://github.com/ggml-org/llama.cpp)
 
 ## Current status
 
+As recorded on **23 November 2026 (Japan Standard Time)**:
+
 | Area | Status |
 | --- | --- |
 | Spin8 CPU/CUDA operations, loader and Qwen35 graph integration | Implemented |
 | CPU inference on small synthetic models, including projection | Verified |
 | HF download, conversion, resumption and evaluation tools | Implemented, with small-model checks |
-| PyTorch CUDA preflight on a Colab A100 | Passed |
-| Native Spin8 CUDA execution on an actual A100 | Not run |
-| Full 27B conversion, inference and mathematics benchmarks | Not run |
+| Native CPU/CUDA codec, graph parity, projected graph parity and generation API checks | Passed on a Colab A100-SXM4-40GB |
+| Qwen3.8-27B source download | All 18 shards downloaded and verified |
+| Full 27B Spin8 conversion | Running |
+| Completed 27B GGUF inference, mathematics benchmarks and HF publication | Not yet completed |
 
-[STATUS.md](docs/spin8/STATUS.md) records the validation scope and source artefact hashes. The supplied GGUF files are synthetic fixtures for checking numerical operations. The repository contains no pretrained 27B weights and no measured improvement in mathematical ability, refusal rate or throughput.
+The A100 run used PyTorch `2.14.1+cu130` and CUDA `13.0`. With the explicit FP32 comparison profile described below, the maximum absolute logit errors were `3.4570693969726562e-6` for the ordinary fixture and `3.427267074584961e-6` for the projected fixture. Both passed the unchanged `atol=rtol=1e-4` limits and observed `MUL_MAT_SPIN8` execution on CUDA.
+
+[STATUS.md](docs/spin8/STATUS.md) records the validation scope and source artefact hashes. These comparisons use synthetic models and CPU references decoded from the same Spin8 weights; they do not measure quality against the original BF16 model. The repository contains no pretrained 27B weights. No improvement in mathematical ability or refusal rate has been measured, and full-model throughput has not yet been reported.
 
 GitHub Actions was disabled when this repository was created to prevent imported upstream release workflows from running. The recorded CPU results come from earlier local validation; they are not evidence of a successful CI run in this repository.
 
@@ -59,7 +64,8 @@ python tools/spin8/verify_native.py \
   --model examples/spin8-colab/payload/fixtures/tiny-qwen35-spin8.gguf \
   --control examples/spin8-colab/payload/fixtures/tiny-qwen35-decoded.gguf \
   --out-dir build-spin8-cpu/spin8-parity \
-  --ngl 0 --control-ngl 0 --require-spin8-device CPU
+  --ngl 0 --control-ngl 0 --cache-type f32 \
+  --atol 1e-4 --rtol 1e-4 --require-spin8-device CPU
 ```
 
 This comparison checks native execution against an F32 model decoded from the same Spin8 weights. It does not measure quantisation error against the original pretrained model or assess language quality.
@@ -80,16 +86,20 @@ cmake -S . -B build-spin8-cuda \
   -DLLAMA_OPENSSL=OFF
 cmake --build build-spin8-cuda --target llama-server test-spin8-native -j 4
 
+GGML_CUDA_SPIN8_VALIDATE_F32=1 NVIDIA_TF32_OVERRIDE=0 \
 python tools/spin8/verify_native.py \
   --binary build-spin8-cuda/bin/test-spin8-native \
   --model examples/spin8-colab/payload/fixtures/tiny-qwen35-spin8.gguf \
   --control examples/spin8-colab/payload/fixtures/tiny-qwen35-decoded.gguf \
   --out-dir build-spin8-cuda/spin8-parity \
-  --ngl -1 --control-ngl 0 \
+  --ngl 99 --control-ngl 0 --cache-type f32 \
+  --atol 1e-4 --rtol 1e-4 \
   --require-spin8-device CUDA --require-spin8-op MUL_MAT_SPIN8
 ```
 
-These are execution instructions, not a record of completed native Spin8 validation on an A100. The placement check detects ordinary CPU fallback; it is neither a throughput benchmark nor a GPU kernel profiler.
+This is the profile used for the completed A100 synthetic comparisons. F32 K/V storage gives both executions the same cache precision. The opt-in `GGML_CUDA_SPIN8_VALIDATE_F32` switch sends ordinary F32 matrix multiplication through cuBLAS F32, avoiding the custom MMF path's TF32 instructions; `NVIDIA_TF32_OVERRIDE=0` disables TF32 in cuBLAS. These settings leave Spin8 kernels unchanged and apply only to this comparison process. The Colab bootstrap records the profile and runs its generation API smoke checks with the normal environment.
+
+The placement check detects ordinary CPU fallback; it is neither a throughput benchmark nor a GPU kernel profiler. See the [testing guide](tools/spin8/TESTING.md) for the projected fixture and recorded comparison fields.
 
 ## Quantisation and direct weight editing
 
@@ -98,7 +108,7 @@ Use [convert.py](tools/spin8/convert.py) to quantise a floating-point GGUF, and 
 ```sh
 python tools/spin8/convert.py quantize model-f16.gguf model-spin8.gguf \
   --include-embedding --encoder torch --device cuda \
-  --compute-dtype float32 --chunk-groups 256 \
+  --compute-dtype float32 --chunk-groups 8192 \
   --resume-dir spin8-cache/run-01
 
 build-spin8-cuda/bin/llama-server -m model-spin8.gguf \
@@ -116,6 +126,8 @@ The repository includes the [Colab notebook](examples/spin8-colab/Spin8_A100_Wei
 The notebook is available from this public repository. You can also download it and upload it to Colab.
 
 The notebook embeds a verified source payload and applies its bundled patch to the pinned upstream commit. It does not automatically follow future changes to this repository's `main` branch.
+
+It checks the allocated GPU before substantial work and stops if Colab supplies a device other than an A100. It preserves the installed PyTorch/CUDA environment and streams stage output into the notebook. The encoder defaults are `chunk_groups=8192`, `tile_elements=1048576`, `scale_steps=17` and seed `81237`.
 
 The defaults perform ordinary Spin8 conversion and evaluate 64 GSM8K questions. Set `MATH_DELTA=True` to enable the mathematical weight difference. To enable direction projection, set `DIRECTION_PATH` to an existing direction file appropriate to the model. Set `BENCHMARK_FULL=True` to evaluate all 1,319 questions. Comparing against the original F16 model requires additional disk space; if a reference model cannot be prepared, improvement is recorded as unmeasured. The workflow does not include a refusal-rate benchmark.
 

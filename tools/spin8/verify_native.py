@@ -8,6 +8,7 @@ import array
 import hashlib
 import json
 import math
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -52,6 +53,7 @@ def invoke(args: argparse.Namespace, model: Path, name: str, ngl: int, device: s
     command = [
         str(args.binary), "--model", str(model), "--output-prefix", str(prefix),
         "--ngl", str(ngl), "--threads", str(args.threads), "--ctx", str(args.ctx),
+        "--cache-type", args.cache_type,
         "--flash-attn", args.flash_attn, "--prompt-tokens", args.prompt_tokens,
         "--decode-tokens", args.decode_tokens,
     ]
@@ -92,9 +94,13 @@ def source_identity() -> dict:
 
 
 def compare(args: argparse.Namespace, actual: dict, control: dict) -> dict:
-    for key in ("prompt_tokens", "decode_tokens", "logits_shape", "n_vocab", "n_embd", "n_layer"):
+    for key in ("prompt_tokens", "decode_tokens", "logits_shape", "n_vocab", "n_embd", "n_layer",
+                "cache_type_k", "cache_type_v"):
         if actual[key] != control[key]:
             raise ValueError(f"execution mismatch: {key}")
+    for metadata in (actual, control):
+        if metadata["cache_type_k"] != args.cache_type or metadata["cache_type_v"] != args.cache_type:
+            raise ValueError("execution cache types differ from --cache-type")
     row_ids = lambda value: [(row["phase"], row["position"], row["input_token"]) for row in value["rows"]]
     if row_ids(actual) != row_ids(control):
         raise ValueError("logit row identities do not match")
@@ -134,6 +140,7 @@ def compare(args: argparse.Namespace, actual: dict, control: dict) -> dict:
         "status": "PASS" if violations == 0 and device_verified is not False else "FAIL",
         "scope": "native graph parity against decoded codec weights; not source-BF16 accuracy or language quality",
         "atol": args.atol, "rtol": args.rtol,
+        "cache_type_k": actual["cache_type_k"], "cache_type_v": actual["cache_type_v"],
         "elements": len(values), "tolerance_violations": violations,
         "max_absolute_error": maximum,
         "rmse": math.sqrt(squared_error / len(values)),
@@ -161,6 +168,8 @@ def main() -> int:
     parser.add_argument("--device", default="")
     parser.add_argument("--threads", type=int, default=2)
     parser.add_argument("--ctx", type=int, default=128)
+    parser.add_argument("--cache-type", choices=("f16", "f32"), default="f16",
+                        help="K/V cache storage type for both executions; use f32 to isolate cache rounding")
     parser.add_argument("--flash-attn", choices=("off", "on", "auto"), default="off")
     loading = parser.add_mutually_exclusive_group()
     loading.add_argument("--mmap", dest="mmap", action="store_true", default=None)
@@ -185,6 +194,11 @@ def main() -> int:
         "schema": "spin8-native-parity-v1", "status": "FAIL",
         "timestamp_utc": datetime.now(timezone.utc).isoformat(),
         "runtime_executable": artifact(args.binary), "source": source_identity(),
+        "precision_environment": {
+            name: os.environ.get(name)
+            for name in ("GGML_CUDA_SPIN8_VALIDATE_F32", "NVIDIA_TF32_OVERRIDE",
+                         "GGML_CUDA_CUBLAS_COMPUTE_TYPE")
+        },
     }
     try:
         control_ngl = args.ngl if args.control_ngl is None else args.control_ngl

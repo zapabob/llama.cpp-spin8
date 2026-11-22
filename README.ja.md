@@ -8,16 +8,21 @@
 
 ## 現在の到達点
 
+**2026-11-23（日本時間）時点の記録です。**
+
 | 項目 | 状況 |
 | --- | --- |
 | CPU/CUDAのSpin8演算、ローダー、Qwen35グラフ接続 | 実装あり |
 | 合成小型モデルのCPU推論・射影付き推論 | 検証済み |
 | HF取得、変換、再開、評価プログラム | 実装と小型検証あり |
-| 実Colab A100のPyTorch CUDA事前確認 | 成功 |
-| 実A100でのネイティブSpin8 CUDA実行 | 未実施 |
-| 実際の27B全体の変換・推論・数学ベンチマーク | 未実施 |
+| ネイティブCPU/CUDA codec、通常・射影つきgraph parity、生成API | Colab A100-SXM4-40GBで合格 |
+| Qwen3.8-27Bの元重みの取得 | 全18シャードを取得・検証済み |
+| 27B全体のSpin8量子化 | 実行中 |
+| 完成27B GGUFの推論・数学ベンチマーク・HF公開 | 未完了 |
 
-検証条件と元成果物のハッシュは [STATUS.md](docs/spin8/STATUS.md) に記録しています。付属GGUFは演算検証用の合成モデルです。学習済み27B重みや、数学能力・拒否率・速度の改善を示す実測値は含みません。
+今回のA100実行はPyTorch `2.14.1+cu130`、CUDA `13.0`を使用しました。後述するFP32比較条件での最大logit絶対誤差は、通常モデルで `3.4570693969726562e-6`、射影つきモデルで `3.427267074584961e-6` です。従来の `atol=rtol=1e-4` を変更せずに両方が合格し、`MUL_MAT_SPIN8` のCUDA実行配置も確認しました。
+
+検証条件と成果物のハッシュは [STATUS.md](docs/spin8/STATUS.md) に記録しています。この比較は、合成小型モデルと、同じSpin8重みを復号したCPU参照を使った演算検証です。元のBF16モデルに対する品質評価ではありません。学習済み27B重みや、数学能力・拒否率の改善、モデル全体の推論速度を示す完了済みの実測値は含みません。
 
 ## 形式と対応範囲
 
@@ -55,7 +60,8 @@ python tools/spin8/verify_native.py \
   --model examples/spin8-colab/payload/fixtures/tiny-qwen35-spin8.gguf \
   --control examples/spin8-colab/payload/fixtures/tiny-qwen35-decoded.gguf \
   --out-dir build-spin8-cpu/spin8-parity \
-  --ngl 0 --control-ngl 0 --require-spin8-device CPU
+  --ngl 0 --control-ngl 0 --cache-type f32 \
+  --atol 1e-4 --rtol 1e-4 --require-spin8-device CPU
 ```
 
 この比較は、同じSpin8重みを復号したF32モデルとの演算一致を確認します。元の学習済みモデルに対する量子化精度や文章品質の評価とは別です。
@@ -76,16 +82,20 @@ cmake -S . -B build-spin8-cuda \
   -DLLAMA_OPENSSL=OFF
 cmake --build build-spin8-cuda --target llama-server test-spin8-native -j 4
 
+GGML_CUDA_SPIN8_VALIDATE_F32=1 NVIDIA_TF32_OVERRIDE=0 \
 python tools/spin8/verify_native.py \
   --binary build-spin8-cuda/bin/test-spin8-native \
   --model examples/spin8-colab/payload/fixtures/tiny-qwen35-spin8.gguf \
   --control examples/spin8-colab/payload/fixtures/tiny-qwen35-decoded.gguf \
   --out-dir build-spin8-cuda/spin8-parity \
-  --ngl -1 --control-ngl 0 \
+  --ngl 99 --control-ngl 0 --cache-type f32 \
+  --atol 1e-4 --rtol 1e-4 \
   --require-spin8-device CUDA --require-spin8-op MUL_MAT_SPIN8
 ```
 
-これは実行手順です。このリポジトリの登録時点で実A100によるネイティブSpin8検証が完了した、という記録ではありません。配置検査は通常のCPUフォールバックを検出しますが、速度ベンチマークやGPUカーネルプロファイラではありません。
+これは今回のA100による合成モデル比較で使用した条件です。両モデルのK/VをF32で保持し、キャッシュの精度を揃えます。比較用の `GGML_CUDA_SPIN8_VALIDATE_F32` は通常のF32行列積をcuBLASのF32経路へ送り、独自MMF経路のTF32命令を避けます。`NVIDIA_TF32_OVERRIDE=0` はcuBLAS側のTF32を無効にします。Spin8カーネルは変更せず、設定はこの比較プロセスだけに適用します。Colabのbootstrapは条件を記録し、生成APIの確認には通常の環境を使います。
+
+配置検査は通常のCPUフォールバックを検出しますが、速度ベンチマークやGPUカーネルプロファイラではありません。射影つきモデルの確認と記録項目は [検証手順](tools/spin8/TESTING.md) を参照してください。
 
 ## 量子化と直接重み編集
 
@@ -94,7 +104,7 @@ python tools/spin8/verify_native.py \
 ```sh
 python tools/spin8/convert.py quantize model-f16.gguf model-spin8.gguf \
   --include-embedding --encoder torch --device cuda \
-  --compute-dtype float32 --chunk-groups 256 \
+  --compute-dtype float32 --chunk-groups 8192 \
   --resume-dir spin8-cache/run-01
 
 build-spin8-cuda/bin/llama-server -m model-spin8.gguf \
@@ -112,6 +122,8 @@ build-spin8-cuda/bin/llama-server -m model-spin8.gguf \
 この公開リポジトリのノートブックをColabで開けます。ノートブックをダウンロードしてColabへアップロードする方法も使えます。
 
 ノートブックは検証済みのソースpayloadを内蔵し、上流の固定コミットへ同梱パッチを適用します。リポジトリの将来の `main` を自動的に追従する仕組みではありません。
+
+大きな処理の前に実際のGPUを確認し、ColabがA100以外を割り当てた場合は停止します。既存のPyTorch/CUDAを維持し、処理中の出力を逐次表示します。符号化の既定値は `chunk_groups=8192`、`tile_elements=1048576`、`scale_steps=17`、seed `81237` です。
 
 初期設定は通常のSpin8変換とGSM8Kの64問評価です。数学差分は `MATH_DELTA=True`、方向射影はモデルに対応した実ファイルを `DIRECTION_PATH` に指定して有効にします。全1,319問は `BENCHMARK_FULL=True` で選びます。元モデルF16との比較には追加のディスク容量が必要で、比較対象を用意できない場合は改善を未測定として記録します。拒否率ベンチマークは含みません。
 
