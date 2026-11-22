@@ -115,6 +115,10 @@ build-spin8-cuda/bin/llama-server -m model-spin8.gguf \
 
 ## Colabとベンチマーク
 
+固定したQwen3.8-27Bから公開用GGUFを作る場合は、[軽量な公開用ノートブック](examples/spin8-colab/Spin8_A100_Public_Release.ipynb) と [実行ガイド](examples/spin8-colab/README_PUBLIC_RELEASE.md) を使えます。必要なファイルを取得してハッシュを検証し、A100の長い処理を独立したプロセスで実行します。GGUF・モデルカード・公開対象ファイルの一覧を準備した後、専用セルでアップロードします。この構成は通常のSpin8変換で、重み編集と数学ベンチマークは実行しません。
+
+[公開用ノートブックをGoogle Colabで開く](https://colab.research.google.com/github/zapabob/llama.cpp-spin8/blob/main/examples/spin8-colab/Spin8_A100_Public_Release.ipynb)
+
 [Colab用ノートブック](examples/spin8-colab/Spin8_A100_Weight_Edit.ipynb) と [日本語の実行手順](examples/spin8-colab/README_JA.md) を同梱しています。
 
 [Google Colabで開く](https://colab.research.google.com/github/zapabob/llama.cpp-spin8/blob/main/examples/spin8-colab/Spin8_A100_Weight_Edit.ipynb)

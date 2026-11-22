@@ -119,6 +119,10 @@ Retain the source model identity, conversion settings and provenance of any edit
 
 ## Colab and benchmarks
 
+For the fixed Qwen3.8-27B public release, use the [lightweight release notebook](examples/spin8-colab/Spin8_A100_Public_Release.ipynb) and its [execution guide](examples/spin8-colab/README_PUBLIC_RELEASE.md). It downloads hash-checked assets, launches the long A100 job as a detached process, and prepares the GGUF, model card and exact upload manifest. Upload is a separate explicit step. This recipe performs ordinary Spin8 conversion, with no weight editing or mathematics benchmark.
+
+[Open the public release notebook in Google Colab](https://colab.research.google.com/github/zapabob/llama.cpp-spin8/blob/main/examples/spin8-colab/Spin8_A100_Public_Release.ipynb)
+
 The repository includes the [Colab notebook](examples/spin8-colab/Spin8_A100_Weight_Edit.ipynb) and a [Japanese execution guide](examples/spin8-colab/README_JA.md).
 
 [Open in Google Colab](https://colab.research.google.com/github/zapabob/llama.cpp-spin8/blob/main/examples/spin8-colab/Spin8_A100_Weight_Edit.ipynb)
