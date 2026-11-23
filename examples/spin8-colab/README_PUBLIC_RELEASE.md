@@ -43,4 +43,8 @@ Resume uses the same work directory on the same VM. Completed tensor caches are 
 
 ## Recorded status
 
-For this revision, the native bootstrap and source download have passed on an A100 80 GB, and the detached 27B conversion job is running. There is not yet a completed full-model quality benchmark or a verified HF publication result. Mathematical ability and refusal behaviour have not been measured for this release.
+The full 27B conversion is COMPLETE and model verification is PASS on **NVIDIA A100-SXM4-80GB**, with Torch `2.14.1+cu130` and CUDA `13.0`. The file `Qwen3.8-27B-Spin8-cg8192-s17-20261123.gguf` contains **7,167,015,008 bytes** (6.675 GiB), SHA-256 `ae0bc4609f3cee3fad7137da43830b739232b015efb0612769292fbee31c1a60`. Conversion completed at `2026-11-23T01:17:31.416927+00:00`; verification completed at `2026-11-23T01:18:41.463919+00:00`.
+
+The native check produced 1,986,560 finite logit values with F16 K/V caches and a requested 128-token context, and observed Spin8 CUDA placement. Both generation APIs passed under normal runtime settings. The [central completion record](../../docs/spin8/results/qwen38-27b-a100-20261123.json) and [status page](../../docs/spin8/STATUS.md) identify the local observation and its scope; no public HF commit is recorded.
+
+The local release manifest is READY. The separate paired 64-question GSM8K job is RUNNING at `baseline-f16`, with no completed comparison result yet. HF upload has not started; publication awaits an HF write credential in Colab. Mathematical quality, refusal behaviour and a speed advantage have not been established by the execution checks.

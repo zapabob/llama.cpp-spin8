@@ -1,0 +1,107 @@
+{
+  "schema": "spin8-public-result-v1",
+  "record_created_utc": "2026-11-23T01:26:07.112438+00:00",
+  "provenance": {
+    "kind": "Read-only Colab status output and rendered model-card observation; publication state supplied by the execution operator.",
+    "capture_file": "GGUF_COMPLETION_EVIDENCE_20261123.txt",
+    "capture_bytes": 15386,
+    "capture_sha256": "44f7c0325d0779f32d0d14d716ef720b2fad3b9790cacee540885a253b6dcc11",
+    "capture_public_url": null,
+    "scope": "This records the observed Colab checks. The GGUF bytes were not downloaded to this documentation workspace."
+  },
+  "source": {
+    "repo": "Qwen/Qwen3.8-27B",
+    "revision": "37561816e66b5b9153b1b64c10968c18c1e6f4a0",
+    "content_fingerprint": "204c7f7bc94eec4f0e94aa2032b5b37adda4104bde3d61a291173881153c4712",
+    "safetensors_shards": 18,
+    "source_file_bytes": 55563006776,
+    "source_tensor_payload_bytes": 55562855904
+  },
+  "runtime": {
+    "upstream_commit": "7fce5439fe451cd48340b112ec37d2befe02c776",
+    "patch_sha256": "a2cd9930c7446e2a78cc2f5189a8880757cd4e58757d1dd00cd587aca06857a1",
+    "standard_gguf_runtime_compatible": false
+  },
+  "environment": {
+    "gpu": "NVIDIA A100-SXM4-80GB",
+    "device_memory_gib_as_displayed": 79.25,
+    "torch": "2.14.1+cu130",
+    "cuda_build": "13.0",
+    "memory_value_is_device_capacity_not_peak": true
+  },
+  "configuration": {
+    "fingerprint": "dfef82f77e00e8a3f729ec58eb508fd5f6a3706c5c12a733d8063e2aaf25a620",
+    "bank_kind": "triality",
+    "seed": 81237,
+    "encoder": "torch",
+    "device": "cuda",
+    "compute_dtype": "float32",
+    "chunk_groups": 8192,
+    "scale_steps": 17,
+    "tile_elements": 1048576,
+    "embedding_quantised": true,
+    "math_delta": false,
+    "direction_projection": false,
+    "optimiser_steps": 0,
+    "additional_training_answer_data": false,
+    "text_only": true,
+    "vision_included": false,
+    "mtp_included": false
+  },
+  "model": {
+    "file": "Qwen3.8-27B-Spin8-cg8192-s17-20261123.gguf",
+    "colab_path": "/content/spin8-work/outputs/Qwen3.8-27B-Spin8-cg8192-s17-20261123.gguf",
+    "bytes": 7167015008,
+    "sha256": "ae0bc4609f3cee3fad7137da43830b739232b015efb0612769292fbee31c1a60",
+    "canonical_text_tensors": 755,
+    "spin8_matrices": 402,
+    "gguf_tensor_entries_including_banks": 1157
+  },
+  "conversion": {
+    "status": "COMPLETE",
+    "completed_utc": "2026-11-23T01:17:31.416927+00:00"
+  },
+  "verification": {
+    "status": "PASS",
+    "completed_utc": "2026-11-23T01:18:41.463919+00:00",
+    "finite_logit_values": 1986560,
+    "spin8_cuda_placement_observed": true,
+    "cache_type_k": "f16",
+    "cache_type_v": "f16",
+    "requested_context_tokens": 128,
+    "completion_api": "PASS",
+    "openai_completions_api": "PASS",
+    "scope": "Short native execution and generation API checks; not an accuracy, long-context or throughput benchmark."
+  },
+  "release_preparation": {
+    "status": "READY",
+    "manifest_colab_path": "/content/spin8-work/release/dfef82f77e00e8a3f729ec58eb508fd5f6a3706c5c12a733d8063e2aaf25a620/upload-manifest.json",
+    "manifest_files": 31,
+    "total_bytes": 7174658026,
+    "manifest_sha256": null,
+    "manifest_hash_not_present_in_capture": true
+  },
+  "benchmark": {
+    "status": "RUNNING",
+    "stage_at_capture": "baseline-f16",
+    "planned_samples": 64,
+    "planned_comparison": "Original-source F16 versus Spin8",
+    "result": null,
+    "benchmarked_manifest": null
+  },
+  "publication": {
+    "status": "NOT_STARTED",
+    "target_repo": "zapabobouj/Qwen3.8-27B-Spin8-GGUF",
+    "intended_visibility": "public",
+    "credential_check": "NOT_AVAILABLE_IN_COLAB",
+    "credential_checked_utc": "2026-11-23T01:28:35.997656+00:00",
+    "commit": null,
+    "remote_files_verified": false
+  },
+  "limitations": [
+    "The 80 GB full-model run is separate from the earlier 40 GB synthetic parity record.",
+    "Completed conversion and short execution checks do not establish mathematical quality, refusal changes or a speed advantage.",
+    "No completed paired GSM8K result, full-model throughput or measured peak-memory result is recorded in this snapshot.",
+    "The source includes components omitted from the text-only export, so its total bytes are not a like-for-like compression denominator."
+  ]
+}

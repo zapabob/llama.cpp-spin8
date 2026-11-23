@@ -19,12 +19,16 @@ As recorded on **23 November 2026 (Japan Standard Time)**:
 | HF download, conversion, resumption and evaluation tools | Implemented, with small-model checks |
 | Native CPU/CUDA codec, graph parity, projected graph parity and generation API checks | Passed on a Colab A100-SXM4-40GB |
 | Qwen3.8-27B source download | All 18 shards downloaded and verified |
-| Full 27B Spin8 conversion | Running |
-| Completed 27B GGUF inference, mathematics benchmarks and HF publication | Not yet completed |
+| Full 27B Spin8 conversion | COMPLETE on an A100-SXM4-80GB; 7,167,015,008-byte GGUF |
+| Completed 27B GGUF execution | PASS: native Spin8 CUDA placement, finite logits and both generation APIs |
+| Paired 64-question GSM8K screening | RUNNING: preparing the original-source F16 baseline |
+| Hugging Face publication | Not started; awaiting an HF write credential in Colab |
 
-The A100 run used PyTorch `2.14.1+cu130` and CUDA `13.0`. With the explicit FP32 comparison profile described below, the maximum absolute logit errors were `3.4570693969726562e-6` for the ordinary fixture and `3.427267074584961e-6` for the projected fixture. Both passed the unchanged `atol=rtol=1e-4` limits and observed `MUL_MAT_SPIN8` execution on CUDA.
+The earlier **40 GB synthetic validation run** used PyTorch `2.14.1+cu130` and CUDA `13.0`. With the explicit FP32 comparison profile described below, the maximum absolute logit errors were `3.4570693969726562e-6` for the ordinary fixture and `3.427267074584961e-6` for the projected fixture. Both passed the unchanged `atol=rtol=1e-4` limits and observed `MUL_MAT_SPIN8` execution on CUDA.
 
-[STATUS.md](docs/spin8/STATUS.md) records the validation scope and source artefact hashes. These comparisons use synthetic models and CPU references decoded from the same Spin8 weights; they do not measure quality against the original BF16 model. The repository contains no pretrained 27B weights. No improvement in mathematical ability or refusal rate has been measured, and full-model throughput has not yet been reported.
+The **80 GB full-model run** produced `Qwen3.8-27B-Spin8-cg8192-s17-20261123.gguf` (6.675 GiB), SHA-256 `ae0bc4609f3cee3fad7137da43830b739232b015efb0612769292fbee31c1a60`. Conversion completed at `2026-11-23T01:17:31.416927+00:00`; model verification passed at `2026-11-23T01:18:41.463919+00:00`. Its short native check produced **1,986,560 finite logit values** with F16 K/V caches and a requested 128-token context. The generation API checks passed through the normal runtime configuration.
+
+[STATUS.md](docs/spin8/STATUS.md) and the [completion record](docs/spin8/results/qwen38-27b-a100-20261123.json) identify the observation and its limits. Synthetic parity checks compare the same reconstructed weights, and the completed-model checks establish loading and execution. Neither measures accuracy against the original BF16 model. The local release manifest is READY; no model has been uploaded by this run. Mathematical quality, refusal behaviour and full-model throughput remain unmeasured in this record. This GitHub repository contains no pretrained 27B weights.
 
 GitHub Actions was disabled when this repository was created to prevent imported upstream release workflows from running. The recorded CPU results come from earlier local validation; they are not evidence of a successful CI run in this repository.
 

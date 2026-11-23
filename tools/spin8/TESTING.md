@@ -80,7 +80,13 @@ The complete native bootstrap passed on an **NVIDIA A100-SXM4-40GB** in Colab wi
 
 Both parity checks used the FP32 profile above and the unchanged `atol=rtol=1e-4` limits, with no tolerance violations. The reports are `reports/build-report.json`, `reports/native-parity/parity.json`, `reports/projected-native-parity/parity.json` and the codec/server reports in the same work directory. This verifies execution against the same decoded codec weights, not accuracy relative to the original BF16 model.
 
-At this revision, the full 27B conversion is still running. Verification of a completed 27B GGUF, its quality benchmark and its HF upload are not yet complete. No mathematical-ability improvement or reduction in refusal behaviour has been established.
+### Completed 27B execution on an A100 80 GB
+
+A separate full-model run on **NVIDIA A100-SXM4-80GB**, with Torch `2.14.1+cu130` and CUDA `13.0`, completed conversion at `2026-11-23T01:17:31.416927+00:00` and passed model verification at `2026-11-23T01:18:41.463919+00:00`. The GGUF is **7,167,015,008 bytes**, SHA-256 `ae0bc4609f3cee3fad7137da43830b739232b015efb0612769292fbee31c1a60`.
+
+The short native check recorded **1,986,560 finite logit values**, F16 K/V caches, a requested context of 128 tokens and observed Spin8 CUDA placement. Both `/completion` and `/v1/completions` passed through the normal runtime configuration. These completed-model execution checks are separate from the synthetic FP32 parity profile above.
+
+The [completion record](../../docs/spin8/results/qwen38-27b-a100-20261123.json) identifies the local Colab observation and model identity. Paired 64-question GSM8K evaluation is preparing its original-source F16 baseline; no completed quality result is available yet. HF upload has not started; publication awaits an HF write credential in Colab. No mathematical-ability improvement, refusal reduction or full-model speed advantage has been established.
 
 ## Malformed loader inputs
 
